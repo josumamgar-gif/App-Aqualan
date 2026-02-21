@@ -27,7 +27,6 @@ interface Product {
   description: string;
   category: string;
   subcategory?: string;
-  price: number;
   unit: string;
   image_url: string;
   capacity?: string;
@@ -46,7 +45,6 @@ interface CartItem {
   product_id: string;
   product_name: string;
   quantity: number;
-  price: number;
   unit: string;
   image_url: string;
 }
@@ -142,7 +140,6 @@ export default function ProductsScreen() {
         product_id: product.id,
         product_name: product.name,
         quantity: 1,
-        price: product.price,
         unit: product.unit,
         image_url: product.image_url,
       };
@@ -292,12 +289,7 @@ export default function ProductsScreen() {
                     {product.description}
                   </Text>
                   <View style={styles.productFooter}>
-                    <View>
-                      <Text style={styles.productPrice}>
-                        {product.price.toFixed(2)}€
-                      </Text>
-                      <Text style={styles.productUnit}>/{product.unit}</Text>
-                    </View>
+                    <Text style={styles.productUnit}>{product.unit}</Text>
                     <TouchableOpacity
                       style={styles.addButton}
                       onPress={() => addToCart(product)}
@@ -466,14 +458,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 12,
   },
-  productPrice: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: AQUALAN_DARK,
-  },
   productUnit: {
-    fontSize: 12,
-    color: '#999',
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
   },
   addButton: {
     width: 48,
