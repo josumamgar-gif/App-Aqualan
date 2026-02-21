@@ -10,6 +10,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,26 +27,28 @@ interface CartItem {
   product_id: string;
   product_name: string;
   quantity: number;
-  price: number;
   unit: string;
   image_url: string;
 }
 
-interface DeliveryZone {
-  id: string;
-  name: string;
+interface DeliveryInfo {
+  found: boolean;
+  message: string;
+  date: string | null;
+  day_name: string | null;
 }
 
 export default function CartScreen() {
   const router = useRouter();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
-  const [deliveryZones, setDeliveryZones] = useState<DeliveryZone[]>([]);
-  const [selectedZone, setSelectedZone] = useState<string>('');
   const [showCheckout, setShowCheckout] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [deliveryInfo, setDeliveryInfo] = useState<DeliveryInfo | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     phone: '',
+    city: '',
     address: '',
     notes: '',
   });
@@ -54,7 +57,6 @@ export default function CartScreen() {
   useFocusEffect(
     useCallback(() => {
       loadCart();
-      fetchDeliveryZones();
     }, [])
   );
 
@@ -78,13 +80,17 @@ export default function CartScreen() {
     }
   };
 
-  const fetchDeliveryZones = async () => {
+  const fetchDeliveryDate = async (city: string) => {
+    if (!city.trim()) {
+      setDeliveryInfo(null);
+      return;
+    }
     try {
-      const response = await fetch(`${API_URL}/api/delivery-zones`);
+      const response = await fetch(`${API_URL}/api/delivery-date?city=${encodeURIComponent(city)}`);
       const data = await response.json();
-      setDeliveryZones(data);
+      setDeliveryInfo(data);
     } catch (error) {
-      console.error('Error fetching delivery zones:', error);
+      console.error('Error fetching delivery date:', error);
     }
   };
 
@@ -136,13 +142,6 @@ export default function CartScreen() {
     );
   };
 
-  const calculateTotal = () => {
-    return cartItems.reduce(
-      (total, item) => total + item.price * item.quantity,
-      0
-    );
-  };
-
   const validateForm = () => {
     if (!formData.name.trim()) {
       Alert.alert('Error', 'Por favor introduce tu nombre');
@@ -156,12 +155,12 @@ export default function CartScreen() {
       Alert.alert('Error', 'Por favor introduce tu teléfono');
       return false;
     }
-    if (!formData.address.trim()) {
-      Alert.alert('Error', 'Por favor introduce tu dirección de entrega');
+    if (!formData.city.trim()) {
+      Alert.alert('Error', 'Por favor introduce tu ciudad');
       return false;
     }
-    if (!selectedZone) {
-      Alert.alert('Error', 'Por favor selecciona una zona de entrega');
+    if (!formData.address.trim()) {
+      Alert.alert('Error', 'Por favor introduce tu dirección de entrega');
       return false;
     }
     return true;
@@ -176,8 +175,8 @@ export default function CartScreen() {
         customer_name: formData.name,
         customer_email: formData.email,
         customer_phone: formData.phone,
+        delivery_city: formData.city,
         delivery_address: formData.address,
-        delivery_zone: selectedZone,
         items: cartItems,
         notes: formData.notes,
       };
@@ -193,18 +192,7 @@ export default function CartScreen() {
       if (response.ok) {
         await saveCart([]);
         setShowCheckout(false);
-        setFormData({ name: '', email: '', phone: '', address: '', notes: '' });
-        setSelectedZone('');
-        Alert.alert(
-          '¡Pedido realizado!',
-          'Tu pedido ha sido enviado correctamente. Te contactaremos pronto para confirmar la entrega.',
-          [
-            {
-              text: 'Ver pedidos',
-              onPress: () => router.push('/orders'),
-            },
-          ]
-        );
+        setShowSuccessModal(true);
       } else {
         Alert.alert('Error', 'No se pudo procesar el pedido. Inténtalo de nuevo.');
       }
@@ -215,6 +203,54 @@ export default function CartScreen() {
       setLoading(false);
     }
   };
+
+  const closeSuccessModal = () => {
+    setShowSuccessModal(false);
+    setFormData({ name: '', email: '', phone: '', city: '', address: '', notes: '' });
+    setDeliveryInfo(null);
+    router.push('/orders');
+  };
+
+  // Success Modal
+  const SuccessModal = () => (
+    <Modal
+      visible={showSuccessModal}
+      animationType="fade"
+      transparent={true}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <View style={styles.successIconContainer}>
+            <Ionicons name="checkmark-circle" size={80} color="#4CAF50" />
+          </View>
+          <Text style={styles.successTitle}>¡Pedido Enviado!</Text>
+          <Text style={styles.successMessage}>
+            Tu pedido ha sido recibido correctamente.
+          </Text>
+          
+          {deliveryInfo && (
+            <View style={styles.deliveryInfoBox}>
+              <Ionicons name="calendar" size={24} color={AQUALAN_BLUE} />
+              <Text style={styles.deliveryInfoText}>
+                {deliveryInfo.message}
+              </Text>
+            </View>
+          )}
+          
+          <Text style={styles.successSubMessage}>
+            Te contactaremos pronto para confirmar los detalles.
+          </Text>
+          
+          <TouchableOpacity
+            style={styles.successButton}
+            onPress={closeSuccessModal}
+          >
+            <Text style={styles.successButtonText}>Ver mis pedidos</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
 
   if (showCheckout) {
     return (
@@ -259,33 +295,40 @@ export default function CartScreen() {
               onChangeText={(text) => setFormData({ ...formData, phone: text })}
             />
 
-            <Text style={styles.formLabel}>Zona de entrega *</Text>
-            <View style={styles.zonesContainer}>
-              {deliveryZones.map((zone) => (
-                <TouchableOpacity
-                  key={zone.id}
-                  style={[
-                    styles.zoneChip,
-                    selectedZone === zone.id && styles.zoneChipActive,
-                  ]}
-                  onPress={() => setSelectedZone(zone.id)}
-                >
-                  <Text
-                    style={[
-                      styles.zoneChipText,
-                      selectedZone === zone.id && styles.zoneChipTextActive,
-                    ]}
-                  >
-                    {zone.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <Text style={styles.formLabel}>Ciudad *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: Bilbao, Getxo, Barakaldo..."
+              value={formData.city}
+              onChangeText={(text) => {
+                setFormData({ ...formData, city: text });
+                fetchDeliveryDate(text);
+              }}
+            />
+            
+            {deliveryInfo && (
+              <View style={[
+                styles.deliveryPreview,
+                deliveryInfo.found ? styles.deliveryFound : styles.deliveryNotFound
+              ]}>
+                <Ionicons 
+                  name={deliveryInfo.found ? "calendar" : "information-circle"} 
+                  size={20} 
+                  color={deliveryInfo.found ? AQUALAN_BLUE : "#FF9800"} 
+                />
+                <Text style={[
+                  styles.deliveryPreviewText,
+                  !deliveryInfo.found && { color: '#FF9800' }
+                ]}>
+                  {deliveryInfo.message}
+                </Text>
+              </View>
+            )}
 
             <Text style={styles.formLabel}>Dirección de entrega *</Text>
             <TextInput
               style={[styles.input, styles.textArea]}
-              placeholder="Calle, número, piso, ciudad..."
+              placeholder="Calle, número, piso..."
               multiline
               numberOfLines={3}
               value={formData.address}
@@ -309,17 +352,11 @@ export default function CartScreen() {
                   <Text style={styles.summaryItemName}>
                     {item.quantity}x {item.product_name}
                   </Text>
-                  <Text style={styles.summaryItemPrice}>
-                    {(item.price * item.quantity).toFixed(2)}€
+                  <Text style={styles.summaryItemUnit}>
+                    {item.unit}
                   </Text>
                 </View>
               ))}
-              <View style={styles.summaryTotal}>
-                <Text style={styles.summaryTotalLabel}>Total</Text>
-                <Text style={styles.summaryTotalPrice}>
-                  {calculateTotal().toFixed(2)}€
-                </Text>
-              </View>
             </View>
 
             <TouchableOpacity
@@ -328,13 +365,14 @@ export default function CartScreen() {
               disabled={loading}
             >
               <Text style={styles.submitButtonText}>
-                {loading ? 'Procesando...' : 'Confirmar Pedido'}
+                {loading ? 'Enviando...' : 'Enviar Pedido'}
               </Text>
             </TouchableOpacity>
 
             <View style={{ height: 40 }} />
           </ScrollView>
         </KeyboardAvoidingView>
+        <SuccessModal />
       </SafeAreaView>
     );
   }
@@ -374,9 +412,7 @@ export default function CartScreen() {
                   <Text style={styles.itemName} numberOfLines={2}>
                     {item.product_name}
                   </Text>
-                  <Text style={styles.itemPrice}>
-                    {item.price.toFixed(2)}€ /{item.unit}
-                  </Text>
+                  <Text style={styles.itemUnit}>{item.unit}</Text>
                   <View style={styles.quantityContainer}>
                     <TouchableOpacity
                       style={styles.quantityButton}
@@ -393,16 +429,12 @@ export default function CartScreen() {
                     </TouchableOpacity>
                   </View>
                 </View>
-                <View style={styles.itemActions}>
-                  <Text style={styles.itemTotal}>
-                    {(item.price * item.quantity).toFixed(2)}€
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => removeItem(item.product_id)}
-                  >
-                    <Ionicons name="close-circle" size={24} color="#FF4444" />
-                  </TouchableOpacity>
-                </View>
+                <TouchableOpacity
+                  onPress={() => removeItem(item.product_id)}
+                  style={styles.removeButton}
+                >
+                  <Ionicons name="close-circle" size={28} color="#FF4444" />
+                </TouchableOpacity>
               </View>
             ))}
             <View style={{ height: 100 }} />
@@ -410,9 +442,9 @@ export default function CartScreen() {
 
           <View style={styles.footer}>
             <View style={styles.totalContainer}>
-              <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalAmount}>
-                {calculateTotal().toFixed(2)}€
+              <Text style={styles.totalLabel}>{cartItems.length} producto(s)</Text>
+              <Text style={styles.totalItems}>
+                {cartItems.reduce((sum, item) => sum + item.quantity, 0)} unidades
               </Text>
             </View>
             <TouchableOpacity
@@ -425,6 +457,7 @@ export default function CartScreen() {
           </View>
         </>
       )}
+      <SuccessModal />
     </SafeAreaView>
   );
 }
@@ -492,6 +525,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 8,
     elevation: 3,
+    alignItems: 'center',
   },
   itemImage: {
     width: 80,
@@ -508,7 +542,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#333',
   },
-  itemPrice: {
+  itemUnit: {
     fontSize: 13,
     color: '#666',
     marginTop: 4,
@@ -532,14 +566,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     color: '#333',
   },
-  itemActions: {
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-  },
-  itemTotal: {
-    fontSize: 17,
-    fontWeight: 'bold',
-    color: AQUALAN_DARK,
+  removeButton: {
+    padding: 4,
   },
   footer: {
     position: 'absolute',
@@ -566,8 +594,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
   },
-  totalAmount: {
-    fontSize: 24,
+  totalItems: {
+    fontSize: 18,
     fontWeight: 'bold',
     color: AQUALAN_DARK,
   },
@@ -608,27 +636,25 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
   },
-  zonesContainer: {
+  deliveryPreview: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 10,
   },
-  zoneChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
+  deliveryFound: {
     backgroundColor: 'rgba(0, 119, 182, 0.1)',
   },
-  zoneChipActive: {
-    backgroundColor: AQUALAN_BLUE,
+  deliveryNotFound: {
+    backgroundColor: 'rgba(255, 152, 0, 0.1)',
   },
-  zoneChipText: {
+  deliveryPreviewText: {
     fontSize: 14,
     color: AQUALAN_BLUE,
     fontWeight: '500',
-  },
-  zoneChipTextActive: {
-    color: '#FFFFFF',
+    flex: 1,
   },
   orderSummary: {
     backgroundColor: '#FFFFFF',
@@ -654,26 +680,9 @@ const styles = StyleSheet.create({
     color: '#666',
     flex: 1,
   },
-  summaryItemPrice: {
+  summaryItemUnit: {
     fontSize: 14,
-    fontWeight: '500',
-    color: '#333',
-  },
-  summaryTotal: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: 12,
-    marginTop: 8,
-  },
-  summaryTotalLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  summaryTotalPrice: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: AQUALAN_DARK,
+    color: '#999',
   },
   submitButton: {
     backgroundColor: AQUALAN_BLUE,
@@ -689,5 +698,71 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: '600',
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 350,
+  },
+  successIconContainer: {
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
+  },
+  successMessage: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  deliveryInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 119, 182, 0.1)',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+    gap: 12,
+    width: '100%',
+  },
+  deliveryInfoText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: AQUALAN_BLUE,
+    flex: 1,
+  },
+  successSubMessage: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  successButton: {
+    backgroundColor: AQUALAN_BLUE,
+    paddingVertical: 14,
+    paddingHorizontal: 40,
+    borderRadius: 10,
+    width: '100%',
+  },
+  successButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });
