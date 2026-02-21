@@ -750,8 +750,11 @@ async def create_order(order_data: OrderCreate):
     
     await db.orders.insert_one(order.dict())
     
-    # Enviar email
-    await send_order_email(order, delivery_info)
+    # Enviar email a la empresa
+    await send_order_email(order, delivery_info, to_customer=False)
+    
+    # Enviar email de confirmación al cliente
+    await send_order_email(order, delivery_info, to_customer=True)
     
     return order
 
