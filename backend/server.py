@@ -409,8 +409,8 @@ async def send_order_email(order: Order, delivery_info: dict):
         
         # Enviar email
         if SMTP_USER and SMTP_PASSWORD:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                server.starttls()
+            # Usar SSL para puerto 465
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
                 server.login(SMTP_USER, SMTP_PASSWORD)
                 server.send_message(msg)
             logger.info(f"Email enviado correctamente para pedido {order.id}")
