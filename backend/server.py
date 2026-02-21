@@ -297,7 +297,8 @@ class Order(BaseModel):
     customer_email: str
     customer_phone: str
     delivery_address: str
-    delivery_city: str
+    delivery_city: Optional[str] = None
+    delivery_zone: Optional[str] = None  # Para compatibilidad con pedidos antiguos
     items: List[CartItem]
     notes: Optional[str] = None
     status: str = "pendiente"
