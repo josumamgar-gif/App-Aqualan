@@ -307,7 +307,7 @@ class Order(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-async def send_order_email(order: Order, delivery_info: dict):
+async def send_order_email(order: Order, delivery_info: dict, to_customer: bool = False):
     """Envía email con los detalles del pedido"""
     try:
         # Crear el contenido del email
@@ -323,15 +323,27 @@ async def send_order_email(order: Order, delivery_info: dict):
         
         delivery_message = delivery_info.get('message', 'Fecha por confirmar')
         
+        if to_customer:
+            # Email para el cliente
+            header_text = "Confirmación de Pedido"
+            intro_text = f"<p>Hola <strong>{order.customer_name}</strong>,</p><p>Hemos recibido tu pedido correctamente. Aquí tienes los detalles:</p>"
+            footer_text = "<p>Gracias por confiar en AQUALAN. Si tienes alguna duda, contacta con nosotros en info@aqualan.es o al 946 212 789.</p>"
+        else:
+            # Email para la empresa
+            header_text = "Nuevo Pedido Recibido"
+            intro_text = ""
+            footer_text = "<p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>"
+        
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background-color: #0077B6; color: white; padding: 20px; text-align: center;">
                 <h1 style="margin: 0;">AQUALAN</h1>
-                <p style="margin: 5px 0 0 0;">Nuevo Pedido Recibido</p>
+                <p style="margin: 5px 0 0 0;">{header_text}</p>
             </div>
             
             <div style="padding: 20px;">
+                {intro_text}
                 <h2 style="color: #0077B6;">Pedido #{order.id[:8].upper()}</h2>
                 <p><strong>Fecha:</strong> {order.created_at.strftime('%d/%m/%Y %H:%M')}</p>
                 
@@ -340,7 +352,7 @@ async def send_order_email(order: Order, delivery_info: dict):
                     <p style="font-size: 18px; font-weight: bold; color: #0077B6;">{delivery_message}</p>
                 </div>
                 
-                <h3 style="color: #023E8A;">👤 Datos del Cliente</h3>
+                <h3 style="color: #023E8A;">👤 Datos de Entrega</h3>
                 <table style="width: 100%; border-collapse: collapse;">
                     <tr><td style="padding: 5px;"><strong>Nombre:</strong></td><td>{order.customer_name}</td></tr>
                     <tr><td style="padding: 5px;"><strong>Email:</strong></td><td>{order.customer_email}</td></tr>
@@ -363,11 +375,11 @@ async def send_order_email(order: Order, delivery_info: dict):
                     </tbody>
                 </table>
                 
-                {f'<div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 8px;"><h4 style="margin-top: 0;">📝 Notas del cliente:</h4><p>{order.notes}</p></div>' if order.notes else ''}
+                {f'<div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 8px;"><h4 style="margin-top: 0;">📝 Notas:</h4><p>{order.notes}</p></div>' if order.notes else ''}
             </div>
             
             <div style="background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; color: #666;">
-                <p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>
+                {footer_text}
             </div>
         </body>
         </html>
@@ -375,9 +387,13 @@ async def send_order_email(order: Order, delivery_info: dict):
         
         # Crear mensaje
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
+        if to_customer:
+            msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
+            msg['To'] = order.customer_email
+        else:
+            msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
+            msg['To'] = EMAIL_TO
         msg['From'] = SMTP_USER if SMTP_USER else 'pedidos@aqualan.es'
-        msg['To'] = EMAIL_TO
         
         # Versión texto plano
         text_content = f"""
