@@ -148,15 +148,21 @@ export default function ContactScreen() {
           <Text style={styles.sectionTitle}>Horario de Atención</Text>
           <View style={styles.scheduleCard}>
             <View style={styles.scheduleRow}>
-              <Text style={styles.scheduleDay}>Lunes - Viernes</Text>
-              <Text style={styles.scheduleTime}>8:00 - 18:00</Text>
+              <Text style={styles.scheduleDay}>Lunes - Jueves</Text>
+              <View>
+                <Text style={styles.scheduleTime}>8:00 - 15:00</Text>
+                <Text style={styles.scheduleSubtime}>At. Cliente hasta 17:30</Text>
+              </View>
             </View>
             <View style={styles.scheduleRow}>
-              <Text style={styles.scheduleDay}>Sábados</Text>
-              <Text style={styles.scheduleTime}>9:00 - 14:00</Text>
+              <Text style={styles.scheduleDay}>Viernes</Text>
+              <View>
+                <Text style={styles.scheduleTime}>8:00 - 12:30</Text>
+                <Text style={styles.scheduleSubtime}>At. Cliente hasta 15:00</Text>
+              </View>
             </View>
             <View style={styles.scheduleRow}>
-              <Text style={styles.scheduleDay}>Domingos</Text>
+              <Text style={styles.scheduleDay}>Sábado - Domingo</Text>
               <Text style={styles.scheduleTimeClosed}>Cerrado</Text>
             </View>
           </View>
