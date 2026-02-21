@@ -338,6 +338,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FF4444',
   },
+  scheduleSubtime: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 2,
+  },
   footer: {
     padding: 24,
     alignItems: 'center',
