@@ -38,10 +38,10 @@ try:
     mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
     if '<db_password>' in (mongo_url or ''):
         mongo_url = None  # placeholder de Atlas → no conectar
-    # En Render no hay MongoDB local: obligatorio usar MONGO_URL de Atlas
-    if os.environ.get('RENDER') and (not mongo_url or mongo_url.strip() == 'mongodb://localhost:27017'):
-        logging.warning("En Render debes configurar MONGO_URL con tu cadena de MongoDB Atlas. Productos y pedidos en memoria.")
-    elif mongo_url:
+    # No conectar nunca a localhost en producción (Render/Railway no tienen MongoDB local)
+    if not mongo_url or mongo_url.strip() == 'mongodb://localhost:27017':
+        logging.warning("MONGO_URL no configurada o es localhost. Configura MONGO_URL con tu cadena de MongoDB Atlas. Productos y pedidos en memoria.")
+    else:
         client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
         db = client[os.environ.get('DB_NAME', 'test_database')]
 except Exception as e:
@@ -1125,7 +1125,7 @@ async def submit_offer_request(data: OfferRequestForm):
     """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es."""
     has_email = bool(RESEND_API_KEY or (SMTP_USER and SMTP_PASSWORD))
     if not has_email:
-        logger.warning("offer-request: Ni RESEND_API_KEY ni SMTP configurados. Configura uno en Render.")
+        logger.warning("offer-request: Ni RESEND_API_KEY ni SMTP configurados. Configura uno en el panel (Render/Railway).")
         raise HTTPException(status_code=503, detail="Servicio de email no configurado. Contacta con el administrador.")
     try:
         ok = await asyncio.to_thread(_send_offer_request_email, data)

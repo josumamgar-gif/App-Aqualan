@@ -355,8 +355,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   categoryCustomIcon: {
-    width: 36,
-    height: 36,
+    width: 48,
+    height: 48,
   },
   categoryName: {
     fontSize: 16,
