@@ -8,10 +8,12 @@ import {
   Image,
   Dimensions,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getApiUrl, hasBackend } from '../../lib/api';
 
 const { width } = Dimensions.get('window');
@@ -71,6 +73,7 @@ export default function HomeScreen() {
 
   const navigateToProducts = (categoryId?: string) => {
     if (categoryId) {
+      AsyncStorage.setItem('selected_category', categoryId);
       router.push({ pathname: '/products', params: { category: categoryId } });
     } else {
       router.push('/products');
@@ -80,16 +83,21 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Header con fondo blanco y logo */}
+        {/* Header con fondo blanco y logo (clic → aqualan.es) */}
         <View style={styles.header}>
-          <Image
-            source={{ uri: `data:image/png;base64,${LOGO_BASE64}` }}
-            style={styles.logo}
-            resizeMode="contain"
-          />
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://aqualan.es')}
+            activeOpacity={0.8}
+          >
+            <Image
+              source={{ uri: `data:image/png;base64,${LOGO_BASE64}` }}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
         </View>
 
-        {/* Hero Section con imagen de fondo */}
+        {/* Hero Section con imagen de fondo — PREVIEW: mejorar después (blur, estilo) */}
         <View style={styles.heroSection}>
           <Image
             source={{ uri: `data:image/webp;base64,${FONDO_BASE64}` }}
@@ -144,11 +152,19 @@ export default function HomeScreen() {
                   onPress={() => navigateToProducts(category.id)}
                 >
                   <View style={styles.categoryIconContainer}>
-                    <Ionicons
-                      name={getCategoryIcon(category.icon)}
-                      size={32}
-                      color={AQUALAN_BLUE}
-                    />
+                    {category.id === 'botellones' ? (
+                      <Image
+                        source={require('../../assets/icons/botellones.png')}
+                        style={styles.categoryCustomIcon}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      <Ionicons
+                        name={getCategoryIcon(category.icon)}
+                        size={32}
+                        color={AQUALAN_BLUE}
+                      />
+                    )}
                   </View>
                   <Text style={styles.categoryName}>{category.name}</Text>
                   <Text style={styles.categoryDescription} numberOfLines={2}>
@@ -337,6 +353,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 12,
+  },
+  categoryCustomIcon: {
+    width: 36,
+    height: 36,
   },
   categoryName: {
     fontSize: 16,

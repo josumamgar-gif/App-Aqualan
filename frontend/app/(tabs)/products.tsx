@@ -18,6 +18,7 @@ import { getApiUrl, hasBackend } from '../../lib/api';
 const AQUALAN_BLUE = '#0077B6';
 const AQUALAN_LIGHT_BLUE = '#00B4D8';
 const AQUALAN_DARK = '#023E8A';
+const KEY_SELECTED_CATEGORY = 'selected_category';
 
 interface Product {
   id: string;
@@ -61,7 +62,16 @@ export default function ProductsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadCart();
-    }, [])
+      const cat = params.category as string | undefined;
+      if (cat) {
+        setSelectedCategory(cat);
+        AsyncStorage.setItem(KEY_SELECTED_CATEGORY, cat);
+      } else {
+        AsyncStorage.getItem(KEY_SELECTED_CATEGORY).then((c) => {
+          if (c) setSelectedCategory(c);
+        });
+      }
+    }, [params.category])
   );
 
   useEffect(() => {
@@ -192,7 +202,10 @@ export default function ProductsScreen() {
             styles.categoryChip,
             !selectedCategory && styles.categoryChipActive,
           ]}
-          onPress={() => setSelectedCategory(null)}
+          onPress={() => {
+            setSelectedCategory(null);
+            AsyncStorage.removeItem(KEY_SELECTED_CATEGORY);
+          }}
         >
           <Text
             style={[
@@ -210,7 +223,10 @@ export default function ProductsScreen() {
               styles.categoryChip,
               selectedCategory === category.id && styles.categoryChipActive,
             ]}
-            onPress={() => setSelectedCategory(category.id)}
+            onPress={() => {
+              setSelectedCategory(category.id);
+              AsyncStorage.setItem(KEY_SELECTED_CATEGORY, category.id);
+            }}
           >
             <Ionicons
               name={getCategoryIcon(category.icon)}

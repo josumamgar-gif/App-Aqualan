@@ -6,6 +6,22 @@ No uses la IP en el navegador como URL del backend (`http://178.211.133.79:8000`
 
 ---
 
+## Cómo subir la app web (frontend) a cPanel
+
+Cuando hagas cambios en la app y quieras actualizar **https://aqualan.es/app**:
+
+1. **En tu PC**, en la carpeta del proyecto:
+   ```bash
+   cd frontend
+   EXPO_PUBLIC_BACKEND_URL=https://aqualan-api.onrender.com npx expo export -p web
+   ```
+2. **Crea un ZIP** con todo el contenido de `frontend/dist` (los archivos de dentro, no la carpeta).
+3. **cPanel** → Archivos → entra en la carpeta de la app (ej. `public_html/app`).
+4. **Sube el ZIP**, descomprímelo ahí (sobrescribe si ya había archivos).
+5. Prueba **https://aqualan.es/app**.
+
+---
+
 ## Opción recomendada: API en el mismo dominio (https://aqualan.es/api)
 
 Backend en el servidor 178.211.133.79, accesible como **https://aqualan.es/api**. El frontend usa `EXPO_PUBLIC_BACKEND_URL=https://aqualan.es`.
