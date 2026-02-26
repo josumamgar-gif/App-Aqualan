@@ -56,8 +56,6 @@ EMAIL_TO = 'pedidos@aqualan.es'
 # Resend.com API (recomendado en Render plan gratis: SMTP está bloqueado)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 EMAIL_FROM_RESEND = os.environ.get('EMAIL_FROM', 'AQUALAN <onboarding@resend.dev>')
-# Si Resend está en modo prueba (solo permite enviar a tu email), pon aquí tu email y todos los correos te llegarán a ti
-RESEND_TEST_EMAIL = os.environ.get('RESEND_TEST_EMAIL', '').strip()
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -492,20 +490,15 @@ class OfferRequestForm(BaseModel):
 
 
 def _send_email_resend(to: str, subject: str, html: str, from_email: Optional[str] = None) -> bool:
-    """Envía un email usando la API de Resend (HTTPS). Funciona en Render/Railway.
-    Si RESEND_TEST_EMAIL está definido (Resend en modo prueba), reenvía todo a ese email y añade el destinatario real al asunto."""
+    """Envía un email usando la API de Resend (HTTPS). Funciona en Render/Railway."""
     if not RESEND_API_KEY or not resend:
         return False
-    actual_to = RESEND_TEST_EMAIL if RESEND_TEST_EMAIL else to
-    actual_subject = f"[Para: {to}] {subject}" if RESEND_TEST_EMAIL and actual_to != to else subject
-    if RESEND_TEST_EMAIL and actual_to != to:
-        html = f'<p style="background:#fff3cd;padding:8px;border-radius:4px;"><strong>Correo dirigido a:</strong> {to}</p>' + html
     try:
         resend.api_key = RESEND_API_KEY
         params = {
             "from": from_email or EMAIL_FROM_RESEND,
-            "to": [actual_to],
-            "subject": actual_subject,
+            "to": [to],
+            "subject": subject,
             "html": html,
         }
         resend.Emails.send(params)

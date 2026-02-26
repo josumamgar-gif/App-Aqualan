@@ -34,7 +34,6 @@ En **Variables** del servicio, añade **obligatoriamente**:
 |----------|--------|
 | `RESEND_API_KEY` | Tu API key de Resend (Dashboard → API Keys) |
 | `EMAIL_FROM` | `AQUALAN <onboarding@resend.dev>` |
-| `RESEND_TEST_EMAIL` | **Tu email** (ej. `josumamgar@gmail.com`). Resend en modo prueba solo permite enviar a tu cuenta; con esta variable todos los correos te llegan a ti y la app no da error 500. Cuando verifiques un dominio en Resend, quita esta variable. |
 
 Con `RESEND_API_KEY` el backend envía los emails por la API de Resend. No necesitas SMTP.
 
