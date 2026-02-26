@@ -529,18 +529,16 @@ def _send_offer_request_email(data: OfferRequestForm) -> bool:
         logger.info("Oferta solicitada (SMTP no configurado): %s - %s - %s", data.empresa, data.nombre, data.email)
         return True
     try:
-        def _do_send():
-            if SMTP_PORT == 465:
-                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-                    server.login(SMTP_USER, SMTP_PASSWORD)
-                    server.send_message(msg)
-            else:
-                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-                    server.starttls()
-                    server.login(SMTP_USER, SMTP_PASSWORD)
-                    server.send_message(msg)
-        import threading
-        threading.Thread(target=_do_send, daemon=True).start()
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+        logger.info("Email de oferta enviado correctamente: %s - %s", data.empresa, data.email)
         return True
     except Exception as e:
         logger.exception("Error enviando email de oferta: %s", e)
@@ -686,6 +684,99 @@ async def send_order_email(order: Order, delivery_info: dict, to_customer: bool 
     except Exception as e:
         logger.exception(f"Error enviando email: {e}")
         return False
+
+
+def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool) -> None:
+    """Envía el email del pedido de forma síncrona (para ejecutar en thread). Errores se registran."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        logger.warning("Credenciales SMTP no configuradas. Email de pedido no enviado.")
+        return
+    try:
+        items_html = ""
+        for item in order.items:
+            items_html += f"""
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">{item.product_name}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">{item.quantity}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">{item.unit}</td>
+            </tr>
+            """
+        delivery_message = delivery_info.get('message', 'Fecha por confirmar')
+        if to_customer:
+            header_text = "Confirmación de Pedido"
+            intro_text = f"<p>Hola <strong>{order.customer_name}</strong>,</p><p>Hemos recibido tu pedido correctamente. Aquí tienes los detalles:</p>"
+            footer_text = "<p>Gracias por confiar en AQUALAN. Si tienes alguna duda, contacta con nosotros en info@aqualan.es o al 946 212 789.</p>"
+        else:
+            header_text = "Nuevo Pedido Recibido"
+            intro_text = ""
+            footer_text = "<p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>"
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #0077B6; color: white; padding: 20px; text-align: center;">
+                <h1 style="margin: 0;">AQUALAN</h1>
+                <p style="margin: 5px 0 0 0;">{header_text}</p>
+            </div>
+            <div style="padding: 20px;">
+                {intro_text}
+                <h2 style="color: #0077B6;">Pedido #{order.id[:8].upper()}</h2>
+                <p><strong>Fecha:</strong> {order.created_at.strftime('%d/%m/%Y %H:%M')}</p>
+                <div style="background-color: #e8f4f8; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                    <h3 style="color: #023E8A; margin-top: 0;">📅 Fecha de Entrega</h3>
+                    <p style="font-size: 18px; font-weight: bold; color: #0077B6;">{delivery_message}</p>
+                </div>
+                <h3 style="color: #023E8A;">👤 Datos de Entrega</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr><td style="padding: 5px;"><strong>Nombre:</strong></td><td>{order.customer_name}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Email:</strong></td><td>{order.customer_email}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Teléfono:</strong></td><td>{order.customer_phone}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Ciudad:</strong></td><td>{order.delivery_city}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Dirección:</strong></td><td>{order.delivery_address}</td></tr>
+                </table>
+                <h3 style="color: #023E8A;">📦 Productos Solicitados</h3>
+                <table style="width: 100%; border-collapse: collapse; background-color: #f9f9f9;">
+                    <thead>
+                        <tr style="background-color: #0077B6; color: white;">
+                            <th style="padding: 10px; text-align: left;">Producto</th>
+                            <th style="padding: 10px; text-align: center;">Cantidad</th>
+                            <th style="padding: 10px; text-align: left;">Unidad</th>
+                        </tr>
+                    </thead>
+                    <tbody>{items_html}</tbody>
+                </table>
+                {f'<div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 8px;"><h4 style="margin-top: 0;">📝 Notas:</h4><p>{order.notes}</p></div>' if order.notes else ''}
+            </div>
+            <div style="background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; color: #666;">{footer_text}</div>
+        </body>
+        </html>
+        """
+        msg = MIMEMultipart('alternative')
+        if to_customer:
+            msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
+            msg['To'] = order.customer_email
+        else:
+            msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
+            msg['To'] = EMAIL_TO
+        msg['From'] = SMTP_USER or 'pedidos@aqualan.es'
+        text_content = f"\nPedido: #{order.id[:8].upper()}\nFecha: {order.created_at.strftime('%d/%m/%Y %H:%M')}\nFECHA DE ENTREGA: {delivery_message}\n\n"
+        for item in order.items:
+            text_content += f"- {item.quantity}x {item.product_name} ({item.unit})\n"
+        if order.notes:
+            text_content += f"\nNOTAS: {order.notes}"
+        msg.attach(MIMEText(text_content, 'plain'))
+        msg.attach(MIMEText(html_content, 'html'))
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+        logger.info("Email de pedido enviado correctamente: %s (to_customer=%s)", order.id, to_customer)
+    except Exception as e:
+        logger.exception("Error enviando email de pedido (background): %s", e)
 
 
 # Productos definitivos (imágenes se cambian en GUIA_IMAGENES_PRODUCTOS.md)
@@ -983,10 +1074,8 @@ async def get_delivery_date(city: str):
 
 @api_router.post("/offer-request")
 async def submit_offer_request(data: OfferRequestForm):
-    """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es"""
-    ok = _send_offer_request_email(data)
-    if not ok:
-        raise HTTPException(status_code=500, detail="No se pudo enviar la solicitud. Inténtalo más tarde.")
+    """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es en segundo plano."""
+    asyncio.create_task(asyncio.to_thread(_send_offer_request_email, data))
     return {"success": True, "message": "Solicitud enviada correctamente"}
 
 
@@ -1022,16 +1111,10 @@ async def create_order(order_data: OrderCreate):
     else:
         _orders_in_memory.append(order.dict())
     
-    # Enviar email a la empresa y al cliente (siempre, aunque falle el envío)
-    try:
-        await send_order_email(order, delivery_info, to_customer=False)
-    except Exception as e:
-        logger.error(f"Error enviando email a empresa: {e}")
-    try:
-        await send_order_email(order, delivery_info, to_customer=True)
-    except Exception as e:
-        logger.error(f"Error enviando email al cliente: {e}")
-    
+    # Enviar emails en segundo plano (la respuesta al cliente es inmediata)
+    asyncio.create_task(asyncio.to_thread(_send_order_email_sync, order, delivery_info, False))
+    asyncio.create_task(asyncio.to_thread(_send_order_email_sync, order, delivery_info, True))
+
     return order
 
 

@@ -41,13 +41,15 @@ En el servicio, **Environment** / **Environment Variables**, añade:
 |-----|--------|
 | `MONGO_URL` | Tu cadena de conexión de MongoDB (la que te da Atlas). |
 | `DB_NAME` | `test_database` (o el nombre de tu base). |
-| `BASE_URL` | `https://aqualan.es` |
+| `BASE_URL` | **`https://aqualan-api.onrender.com`** (la URL de tu servicio en Render). Necesario para que las fotos de productos se carguen desde el backend. |
 | `SMTP_SERVER` | `mail.aqualan.es` |
 | `SMTP_PORT` | `465` |
 | `SMTP_USER` | `pedidos@aqualan.es` |
 | `SMTP_PASSWORD` | Tu contraseña de correo |
 
 Guarda. Render hará un deploy automático.
+
+**Importante:** Para que las **fotos de productos** se vean en la app, `BASE_URL` debe ser la URL del backend en Render (ej. `https://aqualan-api.onrender.com`). Las imágenes se sirven desde `/static/products/` del propio backend; añade los archivos `.jpg` en la carpeta `backend/static/products/` con el nombre del ID del producto (ver `backend/static/products/README.txt`).
 
 ### 5. Comprobar la API
 
