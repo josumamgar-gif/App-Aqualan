@@ -16,6 +16,11 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+try:
+    import resend
+except ImportError:
+    resend = None
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -32,8 +37,11 @@ db = None
 try:
     mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
     if '<db_password>' in (mongo_url or ''):
-        mongo_url = 'mongodb://localhost:27017'  # Atlas con placeholder → intentar MongoDB local
-    if mongo_url:
+        mongo_url = None  # placeholder de Atlas → no conectar
+    # En Render no hay MongoDB local: obligatorio usar MONGO_URL de Atlas
+    if os.environ.get('RENDER') and (not mongo_url or mongo_url.strip() == 'mongodb://localhost:27017'):
+        logging.warning("En Render debes configurar MONGO_URL con tu cadena de MongoDB Atlas. Productos y pedidos en memoria.")
+    elif mongo_url:
         client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
         db = client[os.environ.get('DB_NAME', 'test_database')]
 except Exception as e:
@@ -45,6 +53,9 @@ SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 SMTP_USER = os.environ.get('SMTP_USER', '')
 SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
 EMAIL_TO = 'pedidos@aqualan.es'
+# Resend.com API (recomendado en Render plan gratis: SMTP está bloqueado)
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+EMAIL_FROM_RESEND = os.environ.get('EMAIL_FROM', 'AQUALAN <onboarding@resend.dev>')
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -478,6 +489,25 @@ class OfferRequestForm(BaseModel):
     mensaje: Optional[str] = None
 
 
+def _send_email_resend(to: str, subject: str, html: str, from_email: Optional[str] = None) -> bool:
+    """Envía un email usando la API de Resend (HTTPS). Funciona en Render plan gratis."""
+    if not RESEND_API_KEY or not resend:
+        return False
+    try:
+        resend.api_key = RESEND_API_KEY
+        params = {
+            "from": from_email or EMAIL_FROM_RESEND,
+            "to": [to],
+            "subject": subject,
+            "html": html,
+        }
+        resend.Emails.send(params)
+        return True
+    except Exception as e:
+        logger.exception("Resend send failed: %s", e)
+        return False
+
+
 def _send_offer_request_email(data: OfferRequestForm) -> bool:
     """Envía a info@aqualan.es la solicitud de oferta con formato claro."""
     provincia_display = data.otra_provincia.strip() if data.ubicacion == "otra" and data.otra_provincia else data.ubicacion.replace("-", " ").title()
@@ -520,8 +550,14 @@ def _send_offer_request_email(data: OfferRequestForm) -> bool:
     </body>
     </html>
     """
+    subject = f'Oferta solicitada: {data.empresa} - {data.nombre}'
+    if RESEND_API_KEY:
+        if _send_email_resend(EMAIL_INFO, subject, html_content):
+            logger.info("Email de oferta enviado via Resend: %s - %s", data.empresa, data.email)
+            return True
+        return False
     msg = MIMEMultipart('alternative')
-    msg['Subject'] = f'Oferta solicitada: {data.empresa} - {data.nombre}'
+    msg['Subject'] = subject
     msg['To'] = EMAIL_INFO
     msg['From'] = SMTP_USER if SMTP_USER else 'pedidos@aqualan.es'
     msg.attach(MIMEText(html_content, 'html'))
@@ -687,9 +723,9 @@ async def send_order_email(order: Order, delivery_info: dict, to_customer: bool 
 
 
 def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool) -> None:
-    """Envía el email del pedido de forma síncrona (para ejecutar en thread). Errores se registran."""
-    if not SMTP_USER or not SMTP_PASSWORD:
-        logger.warning("Credenciales SMTP no configuradas. Email de pedido no enviado.")
+    """Envía el email del pedido. Usa Resend si RESEND_API_KEY está definido, si no SMTP."""
+    if not RESEND_API_KEY and not (SMTP_USER and SMTP_PASSWORD):
+        logger.warning("Email de pedido: ni RESEND_API_KEY ni SMTP configurados.")
         return
     try:
         items_html = ""
@@ -750,6 +786,18 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
         </body>
         </html>
         """
+        if RESEND_API_KEY:
+            if to_customer:
+                subject = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
+                to_email = order.customer_email
+            else:
+                subject = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
+                to_email = EMAIL_TO
+            if _send_email_resend(to_email, subject, html_content):
+                logger.info("Email de pedido enviado via Resend: %s (to_customer=%s)", order.id, to_customer)
+            else:
+                raise RuntimeError("Resend falló")
+            return
         msg = MIMEMultipart('alternative')
         if to_customer:
             msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
@@ -1074,9 +1122,21 @@ async def get_delivery_date(city: str):
 
 @api_router.post("/offer-request")
 async def submit_offer_request(data: OfferRequestForm):
-    """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es en segundo plano."""
-    asyncio.create_task(asyncio.to_thread(_send_offer_request_email, data))
-    return {"success": True, "message": "Solicitud enviada correctamente"}
+    """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es."""
+    has_email = bool(RESEND_API_KEY or (SMTP_USER and SMTP_PASSWORD))
+    if not has_email:
+        logger.warning("offer-request: Ni RESEND_API_KEY ni SMTP configurados. Configura uno en Render.")
+        raise HTTPException(status_code=503, detail="Servicio de email no configurado. Contacta con el administrador.")
+    try:
+        ok = await asyncio.to_thread(_send_offer_request_email, data)
+        if not ok:
+            raise HTTPException(status_code=500, detail="No se pudo enviar la solicitud. Inténtalo más tarde.")
+        return {"success": True, "message": "Solicitud enviada correctamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("offer-request: error enviando email: %s", e)
+        raise HTTPException(status_code=500, detail="Error al enviar la solicitud. Inténtalo más tarde.")
 
 
 # Pedidos en memoria cuando MongoDB no está disponible
@@ -1111,9 +1171,21 @@ async def create_order(order_data: OrderCreate):
     else:
         _orders_in_memory.append(order.dict())
     
-    # Enviar emails en segundo plano (la respuesta al cliente es inmediata)
-    asyncio.create_task(asyncio.to_thread(_send_order_email_sync, order, delivery_info, False))
-    asyncio.create_task(asyncio.to_thread(_send_order_email_sync, order, delivery_info, True))
+    # Enviar emails (esperamos a que se envíen para que no se pierdan en Render)
+    has_email = bool(RESEND_API_KEY or (SMTP_USER and SMTP_PASSWORD))
+    if not has_email:
+        logger.warning("create_order: Ni RESEND_API_KEY ni SMTP configurados. No se envían emails.")
+    else:
+        try:
+            await asyncio.to_thread(_send_order_email_sync, order, delivery_info, False)
+            logger.info("Email pedido enviado a %s", EMAIL_TO)
+        except Exception as e:
+            logger.exception("Error enviando email a empresa (pedido %s): %s", order.id, e)
+        try:
+            await asyncio.to_thread(_send_order_email_sync, order, delivery_info, True)
+            logger.info("Email pedido enviado al cliente %s", order.customer_email)
+        except Exception as e:
+            logger.exception("Error enviando email al cliente (pedido %s): %s", order.id, e)
 
     return order
 
@@ -1195,6 +1267,7 @@ async def startup_event():
     _load_routes_from_excel()
     await seed_products()
     logger.info("Application started and products seeded")
+    logger.info("SMTP config: server=%s port=%s user=%s password_set=%s | Resend: %s", SMTP_SERVER, SMTP_PORT, SMTP_USER or "(vacío)", "sí" if SMTP_PASSWORD else "no", "sí" if RESEND_API_KEY else "no")
     logger.info("POST /api/offer-request disponible para solicitudes de oferta -> info@aqualan.es")
 
 

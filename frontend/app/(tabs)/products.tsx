@@ -277,7 +277,7 @@ export default function ProductsScreen() {
                   <Image
                     source={{ uri: product.image_url }}
                     style={styles.productImage}
-                    resizeMode="contain"
+                    resizeMode="cover"
                   />
                 </View>
                 {product.capacity && (
@@ -408,12 +408,11 @@ const styles = StyleSheet.create({
   },
   productImageWrap: {
     width: '100%',
-    height: 100,
+    height: 200,
     backgroundColor: '#F5F5F5',
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 8,
   },
   productImage: {
     width: '100%',

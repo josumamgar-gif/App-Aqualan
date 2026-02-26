@@ -39,15 +39,21 @@ En el servicio, **Environment** / **Environment Variables**, añade:
 
 | Key | Value |
 |-----|--------|
-| `MONGO_URL` | Tu cadena de conexión de MongoDB (la que te da Atlas). |
+| `MONGO_URL` | **Obligatorio en Render.** Tu cadena de conexión de MongoDB Atlas (ej. `mongodb+srv://usuario:password@cluster0.xxx.mongodb.net/`). Si no la pones, productos y pedidos se sirven solo desde memoria. |
 | `DB_NAME` | `test_database` (o el nombre de tu base). |
-| `BASE_URL` | **`https://aqualan-api.onrender.com`** (la URL de tu servicio en Render). Necesario para que las fotos de productos se carguen desde el backend. |
-| `SMTP_SERVER` | `mail.aqualan.es` |
+| `BASE_URL` | **`https://aqualan-api.onrender.com`** (la URL de tu servicio en Render). Necesario para las fotos de productos. |
+| `RESEND_API_KEY` | **Recomendado para email en plan gratis.** En el plan gratuito de Render el SMTP (puertos 465/587) está bloqueado. Crea cuenta en [Resend.com](https://resend.com), verifica un dominio o usa su dominio de prueba, y pon aquí tu API key. Así los emails del formulario y de pedidos funcionarán. |
+| `EMAIL_FROM` | Opcional. Remitente cuando usas Resend (ej. `AQUALAN <pedidos@aqualan.es>`). Por defecto se usa `AQUALAN <onboarding@resend.dev>`. |
+| `SMTP_SERVER` | `mail.aqualan.es` (solo si usas plan de pago en Render y quieres SMTP en vez de Resend). |
 | `SMTP_PORT` | `465` |
 | `SMTP_USER` | `pedidos@aqualan.es` |
-| `SMTP_PASSWORD` | Tu contraseña de correo |
+| `SMTP_PASSWORD` | Contraseña del correo (solo si usas SMTP; en plan gratis usa Resend). |
 
 Guarda. Render hará un deploy automático.
+
+**Emails en plan gratis:** Render bloquea SMTP (puertos 465 y 587). Usa **Resend**: regístrate en resend.com, crea una API Key y añade `RESEND_API_KEY` en variables de entorno. Los emails se envían por HTTPS y funcionan. Si no configuras ni Resend ni SMTP válido, no llegarán correos.
+
+**Si los emails no llegan:** En Logs debe aparecer `Resend: sí` o `password_set=sí`. Si usas Resend y falla, revisa la API key y que el "from" esté permitido (verifica el dominio en Resend o usa `onboarding@resend.dev` para pruebas).
 
 **Importante:** Para que las **fotos de productos** se vean en la app, `BASE_URL` debe ser la URL del backend en Render (ej. `https://aqualan-api.onrender.com`). Las imágenes se sirven desde `/static/products/` del propio backend; añade los archivos `.jpg` en la carpeta `backend/static/products/` con el nombre del ID del producto (ver `backend/static/products/README.txt`).
 
