@@ -1,14 +1,16 @@
 from fastapi import FastAPI, APIRouter, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from bson import ObjectId
 import smtplib
 from email.mime.text import MIMEText
@@ -18,10 +20,24 @@ from email.mime.multipart import MIMEMultipart
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# MongoDB connection (tolerante a fallos: si falla o URL con placeholder, db=None y se usan productos en memoria)
+client = None
+db = None
+try:
+    mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+    if '<db_password>' in (mongo_url or ''):
+        mongo_url = 'mongodb://localhost:27017'  # Atlas con placeholder → intentar MongoDB local
+    if mongo_url:
+        client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
+        db = client[os.environ.get('DB_NAME', 'test_database')]
+except Exception as e:
+    logging.warning(f"MongoDB no disponible: {e}. Se usarán productos en memoria.")
 
 # Email configuration
 SMTP_SERVER = os.environ.get('SMTP_SERVER', 'mail.aqualan.es')
@@ -194,33 +210,179 @@ DELIVERY_ROUTES = {
 
 DAY_NAMES = {
     0: "Lunes",
-    1: "Martes", 
+    1: "Martes",
     2: "Miércoles",
     3: "Jueves",
     4: "Viernes"
 }
 
+# Referencia: 23 feb 2026 = lunes = primera semana tipo "Semana 2". Ciclo cada 14 días.
+REFERENCE_MONDAY = date(2026, 2, 23)
+# Rutas cada 14 días: ciudad normalizada -> {"semana": 1|2, "days": [0,1,2,3,4]}
+# Fallback: rutas que en el Excel son CADA 14 DIAS / SEMANA 2 (ej. Leioa, Getxo) por defecto Semana 2, miércoles
+ROUTES_14_DAYS: dict = {
+    "leioa": {"semana": 2, "days": [2]},
+    "getxo": {"semana": 2, "days": [2]},
+    "berango": {"semana": 2, "days": [2]},
+    "algorta": {"semana": 2, "days": [2]},
+    "las arenas-getxo": {"semana": 2, "days": [2]},
+    "andra mari-getxo": {"semana": 2, "days": [2]},
+    "sopelana": {"semana": 2, "days": [2]},
+    "sopela": {"semana": 2, "days": [2]},
+    "urduliz": {"semana": 2, "days": [2]},
+    "plentzia": {"semana": 2, "days": [2]},
+    "mungia": {"semana": 2, "days": [2]},
+    "gorliz": {"semana": 2, "days": [2]},
+    "bermeo": {"semana": 2, "days": [2]},
+    "gernika": {"semana": 2, "days": [2]},
+    "ispaster": {"semana": 2, "days": [2]},
+    "lekeitio": {"semana": 2, "days": [2]},
+    "busturia": {"semana": 2, "days": [2]},
+    "balmaseda": {"semana": 2, "days": [3]},
+    "medina de pomar": {"semana": 2, "days": [3]},
+    "villasana de mena": {"semana": 2, "days": [3]},
+    "zalla": {"semana": 2, "days": [3]},
+    "gordexola": {"semana": 2, "days": [3]},
+    "orduña": {"semana": 2, "days": [3]},
+    "etxebarri": {"semana": 2, "days": [3]},
+    "arrigorriaga": {"semana": 2, "days": [3]},
+    "zaratamo": {"semana": 2, "days": [3]},
+    "ugao-miraballes": {"semana": 2, "days": [3]},
+    "orozko": {"semana": 2, "days": [3]},
+    "barakaldo": {"semana": 2, "days": [3]},
+    "portugalete": {"semana": 2, "days": [3]},
+    "sestao": {"semana": 2, "days": [3]},
+    "trapaga": {"semana": 2, "days": [3]},
+    "alonsotegi": {"semana": 2, "days": [3]},
+}
+
+
+def _current_semana(d: date) -> int:
+    """Devuelve 2 si la semana de d es Semana 2, 1 si es Semana 1 (ciclo 14 días desde REFERENCE_MONDAY)."""
+    monday = d - timedelta(days=d.weekday())
+    weeks_since_ref = (monday - REFERENCE_MONDAY).days // 7
+    return 2 if weeks_since_ref % 2 == 0 else 1
+
+
+def _load_routes_from_excel() -> None:
+    """Carga rutas con SEMANA 1 / SEMANA 2 y días desde rutas.xlsx (columnas L-V y periodicidad)."""
+    global ROUTES_14_DAYS
+    xlsx_path = ROOT_DIR.parent / "rutas.xlsx"
+    if not xlsx_path.exists():
+        return
+    try:
+        import pandas as pd
+        df = pd.read_excel(xlsx_path, engine="openpyxl", header=0)
+        city_col = "Clientes asignados/Ciudad"
+        day_names = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+        period_col = None
+        for c in df.columns:
+            s = df[c].dropna().astype(str)
+            if s.str.contains("SEMANA 1|SEMANA 2", regex=True, case=False).any():
+                period_col = c
+                break
+        if period_col is None or city_col not in df.columns:
+            return
+        current_days = None
+        for _, row in df.iterrows():
+            city = row.get(city_col)
+            if pd.isna(city) or not isinstance(city, str) or not str(city).strip():
+                continue
+            period = row.get(period_col)
+            if pd.isna(period):
+                period = ""
+            period_str = str(period).strip().upper()
+            days_row = []
+            for dc in day_names:
+                if dc not in df.columns:
+                    continue
+                v = row.get(dc)
+                if v is True or (isinstance(v, (int, float)) and not pd.isna(v) and int(v) == 1):
+                    days_row.append(True)
+                else:
+                    days_row.append(False)
+            if len(days_row) == 5 and any(days_row):
+                current_days = [i for i in range(5) if days_row[i]]
+            if "SEMANA 1" in period_str or "SEMANA 2" in period_str:
+                semana = 1 if "SEMANA 1" in period_str else 2
+                if current_days:
+                    key = str(city).lower().strip()
+                    ROUTES_14_DAYS[key] = {"semana": semana, "days": current_days}
+    except Exception as e:
+        logging.warning("No se pudo cargar rutas.xlsx para SEMANA 1/2: %s", e)
+
+
+def _next_delivery_14_days(route_semana: int, delivery_weekdays: List[int], today: date) -> date:
+    """
+    Próxima fecha de entrega para ruta cada 14 días.
+    Norma: si estamos en la misma semana (Semana 1 o 2) y hoy es el día de reparto o antes (o al día siguiente),
+    entrega = ese día de esta semana. Si no, entrega = ese día en la próxima vez que toque esa semana.
+    Ej.: Semana 2 = Leioa, miércoles. Pedido hoy 25 (mié) o mañana 26 (jue) -> entrega 25. Pedido el 26 (jue) "más adelante" -> próximo mié Semana 2 = 11 mar.
+    """
+    first_weekday = min(delivery_weekdays)
+    cur_semana = _current_semana(today)
+    today_weekday = today.weekday()
+    # Lunes de esta semana
+    this_monday = today - timedelta(days=today_weekday)
+
+    if route_semana == cur_semana:
+        # Mismo tipo de semana: si pedido hoy (mié) o antes (lun, mar) → entrega este mié; si pedido el jueves o después → próximo mié de Semana 2
+        if today_weekday <= first_weekday:
+            delivery = this_monday + timedelta(days=first_weekday)
+            return delivery
+        # Jueves o más tarde en la semana → próximo ciclo (ej. 11 mar)
+        next_semana_monday = this_monday + timedelta(days=14)
+    else:
+        # Estamos en la otra semana: próximo día de reparto es la próxima vez que toque route_semana
+        next_semana_monday = this_monday + timedelta(days=7)
+
+    return next_semana_monday + timedelta(days=first_weekday)
+
 
 def get_next_delivery_date(city: str) -> dict:
-    """Calcula la próxima fecha de entrega basada en la ciudad"""
+    """Calcula la próxima fecha de entrega basada en la ciudad (rutas 7 días o 14 días con Semana 1/2)."""
     city_lower = city.lower().strip()
-    
-    # Buscar la ciudad en las rutas
+    today = datetime.now().date()
+
+    # 1) Rutas cada 14 días (SEMANA 1 / SEMANA 2 desde Excel o fallback)
+    for route_city, info in ROUTES_14_DAYS.items():
+        if route_city in city_lower or city_lower in route_city:
+            delivery_date = _next_delivery_14_days(
+                info["semana"], info["days"], today
+            )
+            return {
+                "found": True,
+                "message": f"Tu pedido llegará el {DAY_NAMES[delivery_date.weekday()]} {delivery_date.strftime('%d/%m/%Y')}",
+                "date": delivery_date.strftime('%Y-%m-%d'),
+                "day_name": DAY_NAMES[delivery_date.weekday()],
+            }
+    # Coincidencia parcial para 14 días
+    for route_city, info in ROUTES_14_DAYS.items():
+        if any(word in city_lower for word in route_city.split("-")) or \
+           any(word in route_city for word in city_lower.split()):
+            delivery_date = _next_delivery_14_days(
+                info["semana"], info["days"], today
+            )
+            return {
+                "found": True,
+                "message": f"Tu pedido llegará el {DAY_NAMES[delivery_date.weekday()]} {delivery_date.strftime('%d/%m/%Y')}",
+                "date": delivery_date.strftime('%Y-%m-%d'),
+                "day_name": DAY_NAMES[delivery_date.weekday()],
+            }
+
+    # 2) Rutas cada 7 días (lógica actual)
     delivery_days = None
     for route_city, days in DELIVERY_ROUTES.items():
         if route_city in city_lower or city_lower in route_city:
             delivery_days = days
             break
-    
-    # Si no se encuentra, buscar coincidencia parcial
     if delivery_days is None:
         for route_city, days in DELIVERY_ROUTES.items():
             if any(word in city_lower for word in route_city.split('-')) or \
                any(word in route_city for word in city_lower.split()):
                 delivery_days = days
                 break
-    
-    # Si aún no se encuentra, devolver mensaje genérico
+
     if delivery_days is None:
         return {
             "found": False,
@@ -228,28 +390,21 @@ def get_next_delivery_date(city: str) -> dict:
             "date": None,
             "day_name": None
         }
-    
-    # Calcular próxima fecha de entrega
-    today = datetime.now()
+
     current_weekday = today.weekday()
-    current_hour = today.hour
-    
-    # Buscar el próximo día de reparto
+    current_hour = datetime.now().hour
     days_to_add = None
     for day in delivery_days:
         if day > current_weekday:
             days_to_add = day - current_weekday
             break
-        elif day == current_weekday and current_hour < 10:  # Si es hoy antes de las 10am
+        elif day == current_weekday and current_hour < 10:
             days_to_add = 0
             break
-    
-    # Si no hay día esta semana, buscar el primer día de la próxima semana
     if days_to_add is None:
         days_to_add = (7 - current_weekday) + delivery_days[0]
-    
     delivery_date = today + timedelta(days=days_to_add)
-    
+
     return {
         "found": True,
         "message": f"Tu pedido llegará el {DAY_NAMES[delivery_date.weekday()]} {delivery_date.strftime('%d/%m/%Y')}",
@@ -306,6 +461,90 @@ class Order(BaseModel):
     delivery_day: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+EMAIL_INFO = "info@aqualan.es"
+
+
+class OfferRequestForm(BaseModel):
+    empresa: str
+    nombre: str
+    telefono: str
+    email: str
+    ubicacion: str  # provincia: bizkaia, gipuzkoa, alava, cantabria, navarra, otra
+    otra_provincia: Optional[str] = None
+    ciudad: str
+    productos: List[str]  # ["botellones", "ecobox", ...]
+    mensaje: Optional[str] = None
+
+
+def _send_offer_request_email(data: OfferRequestForm) -> bool:
+    """Envía a info@aqualan.es la solicitud de oferta con formato claro."""
+    provincia_display = data.otra_provincia.strip() if data.ubicacion == "otra" and data.otra_provincia else data.ubicacion.replace("-", " ").title()
+    productos_labels = {
+        "botellones": "Botellones 19L/11L",
+        "ecobox": "Ecobox (15L/5L)",
+        "botellines": "Botellines",
+        "dispensador": "Dispensador Frío/Caliente",
+        "fuentes-red": "Fuente de Red",
+        "cafe": "Café en Cápsulas",
+        "vasos": "Vasos Compostables",
+    }
+    productos_html = "".join(
+        f"<li>{productos_labels.get(p, p)}</li>" for p in data.productos
+    )
+    html_content = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background-color: #0077B6; color: white; padding: 20px; text-align: center;">
+            <h1 style="margin: 0;">AQUALAN</h1>
+            <p style="margin: 5px 0 0 0;">Solicitud de oferta personalizada</p>
+        </div>
+        <div style="padding: 20px;">
+            <p style="font-size: 16px; color: #333;">Se ha recibido una nueva solicitud de oferta desde la app.</p>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
+                <tr style="background-color: #f0f7fc;"><td style="padding: 10px; border: 1px solid #ddd;"><strong>Empresa</strong></td><td style="padding: 10px; border: 1px solid #ddd;">{data.empresa}</td></tr>
+                <tr><td style="padding: 10px; border: 1px solid #ddd;"><strong>Nombre</strong></td><td style="padding: 10px; border: 1px solid #ddd;">{data.nombre}</td></tr>
+                <tr style="background-color: #f0f7fc;"><td style="padding: 10px; border: 1px solid #ddd;"><strong>Teléfono</strong></td><td style="padding: 10px; border: 1px solid #ddd;">{data.telefono}</td></tr>
+                <tr><td style="padding: 10px; border: 1px solid #ddd;"><strong>Email</strong></td><td style="padding: 10px; border: 1px solid #ddd;">{data.email}</td></tr>
+                <tr style="background-color: #f0f7fc;"><td style="padding: 10px; border: 1px solid #ddd;"><strong>Provincia</strong></td><td style="padding: 10px; border: 1px solid #ddd;">{provincia_display}</td></tr>
+                <tr><td style="padding: 10px; border: 1px solid #ddd;"><strong>Ciudad</strong></td><td style="padding: 10px; border: 1px solid #ddd;">{data.ciudad}</td></tr>
+            </table>
+            <h3 style="color: #023E8A; margin-top: 20px;">Productos de interés</h3>
+            <ul style="color: #333;">{productos_html}</ul>
+            {f'<div style="margin-top: 16px; padding: 12px; background-color: #f9f9f9; border-radius: 8px;"><strong>Mensaje:</strong><p style="margin: 8px 0 0 0;">{data.mensaje}</p></div>' if data.mensaje and data.mensaje.strip() else ''}
+        </div>
+        <div style="background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; color: #666;">
+            Solicitud recibida el {datetime.utcnow().strftime('%d/%m/%Y %H:%M')} (UTC). Responder a {data.email}.
+        </div>
+    </body>
+    </html>
+    """
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = f'Oferta solicitada: {data.empresa} - {data.nombre}'
+    msg['To'] = EMAIL_INFO
+    msg['From'] = SMTP_USER if SMTP_USER else 'pedidos@aqualan.es'
+    msg.attach(MIMEText(html_content, 'html'))
+    if not SMTP_USER or not SMTP_PASSWORD:
+        logger.info("Oferta solicitada (SMTP no configurado): %s - %s - %s", data.empresa, data.nombre, data.email)
+        return True
+    try:
+        def _do_send():
+            if SMTP_PORT == 465:
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                    server.starttls()
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                    server.send_message(msg)
+        import threading
+        threading.Thread(target=_do_send, daemon=True).start()
+        return True
+    except Exception as e:
+        logger.exception("Error enviando email de oferta: %s", e)
+        return False
 
 
 async def send_order_email(order: Order, delivery_info: dict, to_customer: bool = False):
@@ -424,262 +663,247 @@ async def send_order_email(order: Order, delivery_info: dict, to_customer: bool 
         msg.attach(MIMEText(text_content, 'plain'))
         msg.attach(MIMEText(html_content, 'html'))
         
-        # Enviar email
+        # Enviar email (SMTP es bloqueante, lo ejecutamos en thread)
         if SMTP_USER and SMTP_PASSWORD:
-            # Usar SSL para puerto 465
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.send_message(msg)
-            logger.info(f"Email enviado correctamente para pedido {order.id}")
+            def _do_send():
+                if SMTP_PORT == 465:
+                    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                        server.login(SMTP_USER, SMTP_PASSWORD)
+                        server.send_message(msg)
+                else:
+                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                        server.starttls()
+                        server.login(SMTP_USER, SMTP_PASSWORD)
+                        server.send_message(msg)
+
+            await asyncio.to_thread(_do_send)
+            logger.info(f"Email enviado correctamente para pedido {order.id} (to_customer={to_customer})")
             return True
         else:
-            logger.warning("Credenciales SMTP no configuradas. Email no enviado.")
+            logger.warning("Credenciales SMTP no configuradas (SMTP_USER/SMTP_PASSWORD). Email no enviado.")
             return False
-            
+
     except Exception as e:
-        logger.error(f"Error enviando email: {str(e)}")
+        logger.exception(f"Error enviando email: {e}")
         return False
 
 
-# Seed initial products (sin precios)
+# Productos definitivos (imágenes se cambian en GUIA_IMAGENES_PRODUCTOS.md)
+SEED_PRODUCTS = [
+    {
+        "id": "botellon-19-sanandres",
+        "name": "Botellón 19L San Andrés",
+        "description": "Botellón PET de 19 litros con asa incorporada. Agua mineral natural del manantial de San Andrés de León.",
+        "category": "botellones",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
+        "capacity": "19L",
+        "brand": "San Andrés",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "botellon-12-sanandres",
+        "name": "Botellón 12L San Andrés",
+        "description": "Botellón PET de 12 litros. Agua del manantial de San Andrés. Formato cómodo y manejable.",
+        "category": "botellones",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
+        "capacity": "12L",
+        "brand": "San Andrés",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "ecobox-5-alzola",
+        "name": "Ecobox 5L Alzola",
+        "description": "Solución ecológica en formato bag in box sobremesa. 5 litros. Marca Alzola.",
+        "category": "ecobox",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
+        "capacity": "5L",
+        "brand": "Alzola",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "ecobox-15-alzola",
+        "name": "Ecobox 15L Alzola",
+        "description": "Formato bag in box ecológico de 15 litros. Reduce desperdicio de envases. Alzola.",
+        "category": "ecobox",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
+        "capacity": "15L",
+        "brand": "Alzola",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "botellin-033-sanandres",
+        "name": "Botellín 0,33L San Andrés",
+        "description": "Agua mineral San Andrés en formato 0,33L. Bajo sodio. Pack 24 unidades.",
+        "category": "botellines",
+        "unit": "24 ud",
+        "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
+        "capacity": "0.33L",
+        "brand": "San Andrés",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "botellin-05-sanandres",
+        "name": "Botellín 0,5L San Andrés",
+        "description": "Agua mineral San Andrés en formato 0,5L. Bajo sodio. Ideal para deporte y reuniones. Pack 24 unidades.",
+        "category": "botellines",
+        "unit": "24 ud",
+        "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
+        "capacity": "0.5L",
+        "brand": "San Andrés",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "botella-15-sanandres",
+        "name": "Botella 1,5L San Andrés",
+        "description": "Formato 1,5L. Agua mineral San Andrés, baja en sodio. Ideal para desplazamientos. Pack 6 unidades.",
+        "category": "botellines",
+        "unit": "6 ud",
+        "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
+        "capacity": "1.5L",
+        "brand": "San Andrés",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "dispensador-fria-caliente",
+        "name": "Dispensador Agua Fría/Caliente",
+        "description": "Dispensador de agua con función fría y caliente. Perfecto para oficinas y hogares.",
+        "category": "dispensadores",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "fuentes-red",
+        "name": "Fuentes de Red",
+        "description": "Fuente de agua conectada a la red. Suministro continuo, ideal para oficinas y locales.",
+        "category": "dispensadores",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "vasos-compostables-220-2000ud",
+        "name": "Vasos Compostables 220ml 2000ud",
+        "description": "Vasos 100% reciclables y compostables. 220ml. Pack 2000 unidades.",
+        "category": "vasos",
+        "unit": "2000 ud",
+        "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
+        "capacity": "220ml",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "vasos-plastico-1000ud",
+        "name": "Vasos Plástico Transparente 1000ud",
+        "description": "Vasos desechables transparentes. Pack 1000 unidades.",
+        "category": "vasos",
+        "unit": "1000 ud",
+        "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
+        "capacity": "220ml",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "cafetera-capsulas-roja",
+        "name": "Cafetera de Cápsulas Roja",
+        "description": "Cafetera de cápsulas. Color rojo. Perfecta para oficinas y hogares.",
+        "category": "cafe",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "cafetera-capsulas-negra",
+        "name": "Cafetera de Cápsulas Negra",
+        "description": "Cafetera de cápsulas. Color negro. Perfecta para oficinas y hogares.",
+        "category": "cafe",
+        "unit": "unidad",
+        "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "capsulas-cremoso-50ud",
+        "name": "Cápsulas Café Cremoso 50ud",
+        "description": "Cápsulas de café con aroma cremoso. 50 unidades. Compatible con nuestras cafeteras.",
+        "category": "cafe",
+        "subcategory": "capsulas",
+        "unit": "50 ud",
+        "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "capsulas-intenso-50ud",
+        "name": "Cápsulas Café Intenso 50ud",
+        "description": "Cápsulas de café con aroma intenso. 50 unidades. Compatible con nuestras cafeteras.",
+        "category": "cafe",
+        "subcategory": "capsulas",
+        "unit": "50 ud",
+        "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "capsulas-descafeinado-50ud",
+        "name": "Cápsulas Café Descafeinado 50ud",
+        "description": "Cápsulas de café descafeinado. 50 unidades. Compatible con nuestras cafeteras.",
+        "category": "cafe",
+        "subcategory": "capsulas",
+        "unit": "50 ud",
+        "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+    {
+        "id": "pack-azucar-paletinas",
+        "name": "Pack Azúcar + Paletinas",
+        "description": "Pack de azúcar con paletinas. Complemento perfecto para tu café.",
+        "category": "cafe",
+        "subcategory": "accesorios",
+        "unit": "pack",
+        "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
+        "available": True,
+        "created_at": datetime.utcnow(),
+    },
+]
+
+# Imágenes desde backend/static/products/ (nombre: {id}.jpg o .png)
+_STATIC_BASE = os.environ.get("BASE_URL", "http://localhost:8000")
+for _p in SEED_PRODUCTS:
+    _p["image_url"] = f"{_STATIC_BASE}/static/products/{_p['id']}.jpg"
+
+
 async def seed_products():
-    count = await db.products.count_documents({})
-    if count == 0:
-        products = [
-            # Botellones
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Botellón 19L San Andrés",
-                "description": "Botellón PET de 19 litros con asa incorporada. Agua mineral natural del manantial de San Andrés de León. Formato pesado con máximo contenido de agua.",
-                "category": "botellones",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
-                "capacity": "19L",
-                "brand": "San Andrés",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Botellón 12L San Andrés",
-                "description": "Botellón PET de 12 litros color azul. Formato cómodo con excelente manejabilidad gracias a su bajo peso. Agua del manantial de San Andrés.",
-                "category": "botellones",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
-                "capacity": "12L",
-                "brand": "San Andrés",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            # Ecobox
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Ecobox 5L Alzola",
-                "description": "Solución ecológica en formato bag in box sobremesa. Tamaño práctico de 5 litros para hidratarse en cualquier momento y lugar.",
-                "category": "ecobox",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
-                "capacity": "5L",
-                "brand": "Alzola",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Ecobox 15L Alzola",
-                "description": "Formato bag in box ecológico que reduce el desperdicio de envases. Compatible con adaptadores Water Kit Vitop para coolers empresariales.",
-                "category": "ecobox",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
-                "capacity": "15L",
-                "brand": "Alzola",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Adaptador Water Kit Vitop",
-                "description": "Adaptador especial con bandeja para acoplar el ECOBOX a fuentes dispensadoras. Fácil instalación y reposición del envase.",
-                "category": "ecobox",
-                "subcategory": "accesorios",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            # Botellines
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Botellín 0.33L Alzola",
-                "description": "Formato de 0,33L ideal para reuniones de empresa y detalles con clientes. Agua mineral Alzola Basque Water.",
-                "category": "botellines",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
-                "capacity": "0.33L",
-                "brand": "Alzola",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Botellín 0.5L Alzola",
-                "description": "Formato de 0,5L perfecto para reuniones y deporte. Agua mineral Alzola con formato adaptado.",
-                "category": "botellines",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
-                "capacity": "0.5L",
-                "brand": "Alzola",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Botellín 0.5L San Andrés",
-                "description": "Agua mineral San Andrés en formato 0,5L. Bajo sodio, excelente para deporte y reuniones.",
-                "category": "botellines",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
-                "capacity": "0.5L",
-                "brand": "San Andrés",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Botella 1.5L San Andrés",
-                "description": "Formato 1,5L ideal para desplazamientos y actividades prolongadas. Agua mineral San Andrés, baja en sodio.",
-                "category": "botellines",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
-                "capacity": "1.5L",
-                "brand": "San Andrés",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            # Dispensadores
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Dispensador Agua Fría/Caliente",
-                "description": "Dispensador de agua con función fría y caliente. Perfecto para oficinas y hogares. Incluye servicio de instalación.",
-                "category": "dispensadores",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Generador de Ozono",
-                "description": "Sistema de higienización para dispensadores. Elimina bacterias mediante reacción fotoquímica. Producto seguro y efectivo.",
-                "category": "dispensadores",
-                "subcategory": "higienizacion",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            # Vasos
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Vasos Compostables 220ml",
-                "description": "Vasos 100% reciclables y compostables. Capacidad 220ml. Perfectos para infusiones, café y agua caliente. Pack de 100 unidades.",
-                "category": "vasos",
-                "unit": "pack 100",
-                "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
-                "capacity": "220ml",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Vasos Plástico Transparente 220ml",
-                "description": "Vasos desechables transparentes. Capacidad 220ml. Pack de 100 unidades.",
-                "category": "vasos",
-                "unit": "pack 100",
-                "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
-                "capacity": "220ml",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Dispensador de Vasos",
-                "description": "Accesorio dispensador de vasos. Se acopla al lateral del dispensador de agua mediante 2 tornillos incluidos.",
-                "category": "vasos",
-                "subcategory": "accesorios",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            # Café
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Cafetera de Cápsulas Roja",
-                "description": "Cafetera de cápsulas funcional y sencilla. Color rojo. Perfecta para oficinas y hogares.",
-                "category": "cafe",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Cafetera de Cápsulas Negra",
-                "description": "Cafetera de cápsulas funcional y sencilla. Color negro. Perfecta para oficinas y hogares.",
-                "category": "cafe",
-                "unit": "unidad",
-                "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Cápsulas Café Cremoso",
-                "description": "Cápsulas de café con aroma cremoso. Caja de 10 cápsulas. Compatible con nuestras cafeteras.",
-                "category": "cafe",
-                "subcategory": "capsulas",
-                "unit": "caja 10",
-                "image_url": "https://images.unsplash.com/photo-1591656927346-5c8e933b966d?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Cápsulas Café Intenso",
-                "description": "Cápsulas de café con aroma intenso. Caja de 10 cápsulas. Compatible con nuestras cafeteras.",
-                "category": "cafe",
-                "subcategory": "capsulas",
-                "unit": "caja 10",
-                "image_url": "https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Cápsulas Café Descafeinado",
-                "description": "Cápsulas de café descafeinado. Caja de 10 cápsulas. Compatible con nuestras cafeteras.",
-                "category": "cafe",
-                "subcategory": "capsulas",
-                "unit": "caja 10",
-                "image_url": "https://images.unsplash.com/photo-1639256150782-ecdb00b01e84?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Pack Azúcar + Paletinas",
-                "description": "Pack de 100 unidades de azúcar con paletinas. Complemento perfecto para tu café.",
-                "category": "cafe",
-                "subcategory": "accesorios",
-                "unit": "pack 100",
-                "image_url": "https://images.unsplash.com/photo-1558640476-437a2b9438a2?w=400",
-                "available": True,
-                "created_at": datetime.utcnow()
-            }
-        ]
-        await db.products.insert_many(products)
-        logger.info(f"Seeded {len(products)} products")
+    """Sincroniza los productos del backend con la BD (inserta o actualiza por id)."""
+    if db is None:
+        logger.info("MongoDB no disponible. Productos servidos desde memoria.")
+        return
+    try:
+        for p in SEED_PRODUCTS:
+            doc = dict(p)
+            await db.products.replace_one(
+                {"id": doc["id"]},
+                doc,
+                upsert=True
+            )
+        logger.info(f"Seeded/synced {len(SEED_PRODUCTS)} products")
+    except Exception as e:
+        logger.warning(f"No se pudo hacer seed en MongoDB: {e}. Productos desde memoria.")
 
 
 # Routes
@@ -688,25 +912,53 @@ async def root():
     return {"message": "Aqualan API - Sistema de Pedidos"}
 
 
+@api_router.get("/health")
+async def health():
+    """Comprueba que es este backend y que la API está lista (incl. offer-request)."""
+    return {"status": "ok", "message": "AQUALAN API", "offer_request": "POST /api/offer-request"}
+
+
+def _products_fallback(category: Optional[str] = None, brand: Optional[str] = None):
+    """Devuelve productos desde SEED_PRODUCTS filtrados por categoría/marca."""
+    filtered = [
+        p for p in SEED_PRODUCTS
+        if (not category or p.get("category") == category)
+        and (not brand or p.get("brand") == brand)
+    ]
+    return [Product(**{**p, "created_at": p.get("created_at", datetime.utcnow())}) for p in filtered]
+
+
 # Products endpoints
 @api_router.get("/products", response_model=List[Product])
 async def get_products(category: Optional[str] = None, brand: Optional[str] = None):
-    query = {}
-    if category:
-        query["category"] = category
-    if brand:
-        query["brand"] = brand
-    
-    products = await db.products.find(query).to_list(100)
-    return [Product(**p) for p in products]
+    if db is not None:
+        try:
+            query = {}
+            if category:
+                query["category"] = category
+            if brand:
+                query["brand"] = brand
+            products = await db.products.find(query).to_list(100)
+            if products:
+                return [Product(**p) for p in products]
+        except Exception as e:
+            logger.warning(f"Error leyendo productos de MongoDB: {e}. Usando lista en memoria.")
+    return _products_fallback(category, brand)
 
 
 @api_router.get("/products/{product_id}", response_model=Product)
 async def get_product(product_id: str):
-    product = await db.products.find_one({"id": product_id})
-    if not product:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
-    return Product(**product)
+    if db is not None:
+        try:
+            product = await db.products.find_one({"id": product_id})
+            if product:
+                return Product(**product)
+        except Exception:
+            pass
+    for p in SEED_PRODUCTS:
+        if p.get("id") == product_id:
+            return Product(**{**p, "created_at": p.get("created_at", datetime.utcnow())})
+    raise HTTPException(status_code=404, detail="Producto no encontrado")
 
 
 @api_router.get("/categories")
@@ -729,11 +981,24 @@ async def get_delivery_date(city: str):
     return get_next_delivery_date(city)
 
 
+@api_router.post("/offer-request")
+async def submit_offer_request(data: OfferRequestForm):
+    """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es"""
+    ok = _send_offer_request_email(data)
+    if not ok:
+        raise HTTPException(status_code=500, detail="No se pudo enviar la solicitud. Inténtalo más tarde.")
+    return {"success": True, "message": "Solicitud enviada correctamente"}
+
+
+# Pedidos en memoria cuando MongoDB no está disponible
+_orders_in_memory: List[dict] = []
+
+
 # Orders endpoints
 @api_router.post("/orders", response_model=Order)
 async def create_order(order_data: OrderCreate):
     # Calcular fecha de entrega
-    delivery_info = get_next_delivery_date(order_data.delivery_city)
+    delivery_info = get_next_delivery_date(order_data.delivery_city or "")
     
     # Create order
     order = Order(
@@ -748,33 +1013,58 @@ async def create_order(order_data: OrderCreate):
         delivery_day=delivery_info.get('day_name')
     )
     
-    await db.orders.insert_one(order.dict())
+    if db is not None:
+        try:
+            await db.orders.insert_one(order.dict())
+        except Exception as e:
+            logger.warning(f"No se pudo guardar el pedido en BD: {e}. Guardando en memoria.")
+            _orders_in_memory.append(order.dict())
+    else:
+        _orders_in_memory.append(order.dict())
     
-    # Enviar email a la empresa
-    await send_order_email(order, delivery_info, to_customer=False)
-    
-    # Enviar email de confirmación al cliente
-    await send_order_email(order, delivery_info, to_customer=True)
+    # Enviar email a la empresa y al cliente (siempre, aunque falle el envío)
+    try:
+        await send_order_email(order, delivery_info, to_customer=False)
+    except Exception as e:
+        logger.error(f"Error enviando email a empresa: {e}")
+    try:
+        await send_order_email(order, delivery_info, to_customer=True)
+    except Exception as e:
+        logger.error(f"Error enviando email al cliente: {e}")
     
     return order
 
 
 @api_router.get("/orders", response_model=List[Order])
 async def get_orders(email: Optional[str] = None):
-    query = {}
-    if email:
-        query["customer_email"] = email
-    
-    orders = await db.orders.find(query).sort("created_at", -1).to_list(100)
-    return [Order(**o) for o in orders]
+    if db is not None:
+        try:
+            query = {}
+            if email:
+                query["customer_email"] = email
+            orders = await db.orders.find(query).sort("created_at", -1).to_list(100)
+            return [Order(**o) for o in orders]
+        except Exception:
+            pass
+    # Fallback: pedidos en memoria
+    filtered = _orders_in_memory if not email else [o for o in _orders_in_memory if o.get("customer_email") == email]
+    filtered = sorted(filtered, key=lambda o: o.get("created_at"), reverse=True)[:100]
+    return [Order(**o) for o in filtered]
 
 
 @api_router.get("/orders/{order_id}", response_model=Order)
 async def get_order(order_id: str):
-    order = await db.orders.find_one({"id": order_id})
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido no encontrado")
-    return Order(**order)
+    if db is not None:
+        try:
+            order = await db.orders.find_one({"id": order_id})
+            if order:
+                return Order(**order)
+        except Exception:
+            pass
+    for o in _orders_in_memory:
+        if o.get("id") == order_id:
+            return Order(**o)
+    raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
 
 @api_router.put("/orders/{order_id}/status")
@@ -783,19 +1073,31 @@ async def update_order_status(order_id: str, status: str):
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Estado inválido. Debe ser uno de: {valid_statuses}")
     
-    result = await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {"status": status, "updated_at": datetime.utcnow()}}
-    )
-    
-    if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Pedido no encontrado")
-    
-    return {"message": "Estado actualizado", "status": status}
+    if db is not None:
+        try:
+            result = await db.orders.update_one(
+                {"id": order_id},
+                {"$set": {"status": status, "updated_at": datetime.utcnow()}}
+            )
+            if result.modified_count > 0:
+                return {"message": "Estado actualizado", "status": status}
+        except Exception:
+            pass
+    for o in _orders_in_memory:
+        if o.get("id") == order_id:
+            o["status"] = status
+            o["updated_at"] = datetime.utcnow()
+            return {"message": "Estado actualizado", "status": status}
+    raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
 
 # Include the router in the main app
 app.include_router(api_router)
+
+# Carpeta de imágenes de productos: pon aquí tus fotos (ver GUIA_IMAGENES_PRODUCTOS.md)
+STATIC_DIR = ROOT_DIR / "static"
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -805,20 +1107,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
 @app.on_event("startup")
 async def startup_event():
+    _load_routes_from_excel()
     await seed_products()
     logger.info("Application started and products seeded")
+    logger.info("POST /api/offer-request disponible para solicitudes de oferta -> info@aqualan.es")
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    if client is not None:
+        client.close()

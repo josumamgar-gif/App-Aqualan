@@ -8,6 +8,38 @@ export default function Root({ children }: PropsWithChildren) {
       <head>
         <meta charSet="utf-8" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+(function() {
+  if (typeof window === 'undefined') return;
+  var e = window.addEventListener;
+  e('error', function(ev) {
+    if (ev.message && ev.message.indexOf('Cannot redefine property: ethereum') !== -1) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return true;
+    }
+  }, true);
+  var op = Object.defineProperty;
+  Object.defineProperty = function(o, p, d) {
+    if (o === window && p === 'ethereum') {
+      try {
+        var desc = Object.getOwnPropertyDescriptor(window, 'ethereum');
+        if (desc && desc.configurable) delete window.ethereum;
+      } catch (_) {}
+    }
+    return op.call(this, o, p, d);
+  };
+  if (!Object.getOwnPropertyDescriptor(window, 'ethereum')) {
+    try {
+      op(window, 'ethereum', { value: undefined, writable: true, configurable: true, enumerable: true });
+    } catch (_) {}
+  }
+})();
+            `.trim(),
+          }}
+        />
         <meta
           name="viewport"
           content="width=device-width, initial-scale=1, shrink-to-fit=no"

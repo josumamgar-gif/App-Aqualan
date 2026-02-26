@@ -16,12 +16,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { getApiUrl, hasBackend } from '../../lib/api';
 
 const AQUALAN_BLUE = '#0077B6';
 const AQUALAN_LIGHT_BLUE = '#00B4D8';
 const AQUALAN_DARK = '#023E8A';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
 interface CartItem {
   product_id: string;
@@ -85,8 +84,9 @@ export default function CartScreen() {
       setDeliveryInfo(null);
       return;
     }
+    if (!hasBackend()) return;
     try {
-      const response = await fetch(`${API_URL}/api/delivery-date?city=${encodeURIComponent(city)}`);
+      const response = await fetch(`${getApiUrl()}/api/delivery-date?city=${encodeURIComponent(city)}`);
       const data = await response.json();
       setDeliveryInfo(data);
     } catch (error) {
@@ -108,38 +108,45 @@ export default function CartScreen() {
   };
 
   const removeItem = (productId: string) => {
-    Alert.alert(
-      'Eliminar producto',
-      '¿Estás seguro de que quieres eliminar este producto del carrito?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: () => {
-            const newCart = cartItems.filter(
-              (item) => item.product_id !== productId
-            );
-            saveCart(newCart);
-          },
-        },
-      ]
-    );
+    const doRemove = () => {
+      const newCart = cartItems.filter(
+        (item) => item.product_id !== productId
+      );
+      saveCart(newCart);
+    };
+    const isWeb = typeof document !== 'undefined';
+    if (isWeb) {
+      if (window.confirm('¿Estás seguro de que quieres eliminar este producto del carrito?')) {
+        doRemove();
+      }
+    } else {
+      Alert.alert(
+        'Eliminar producto',
+        '¿Estás seguro de que quieres eliminar este producto del carrito?',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Eliminar', style: 'destructive', onPress: doRemove },
+        ]
+      );
+    }
   };
 
   const clearCart = () => {
-    Alert.alert(
-      'Vaciar carrito',
-      '¿Estás seguro de que quieres vaciar todo el carrito?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Vaciar',
-          style: 'destructive',
-          onPress: () => saveCart([]),
-        },
-      ]
-    );
+    const isWeb = typeof document !== 'undefined';
+    if (isWeb) {
+      if (window.confirm('¿Estás seguro de que quieres vaciar todo el carrito?')) {
+        saveCart([]);
+      }
+    } else {
+      Alert.alert(
+        'Vaciar carrito',
+        '¿Estás seguro de que quieres vaciar todo el carrito?',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Vaciar', style: 'destructive', onPress: () => saveCart([]) },
+        ]
+      );
+    }
   };
 
   const validateForm = () => {
@@ -168,6 +175,13 @@ export default function CartScreen() {
 
   const submitOrder = async () => {
     if (!validateForm()) return;
+    if (!hasBackend()) {
+      Alert.alert(
+        'Backend no configurado',
+        'Configura EXPO_PUBLIC_BACKEND_URL para poder enviar pedidos.'
+      );
+      return;
+    }
 
     setLoading(true);
     try {
@@ -181,7 +195,7 @@ export default function CartScreen() {
         notes: formData.notes,
       };
 
-      const response = await fetch(`${API_URL}/api/orders`, {
+      const response = await fetch(`${getApiUrl()}/api/orders`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -190,11 +204,32 @@ export default function CartScreen() {
       });
 
       if (response.ok) {
+        const order = await response.json();
+        // Guardar pedido localmente para "Mis pedidos"
+        try {
+          const stored = await AsyncStorage.getItem('local_orders');
+          const list = stored ? JSON.parse(stored) : [];
+          list.unshift(order);
+          await AsyncStorage.setItem('local_orders', JSON.stringify(list));
+        } catch (e) {
+          console.error('Error guardando pedido local:', e);
+        }
+        // Mostrar en el popup la fecha de entrega que devuelve el backend
+        const dateStr = order.delivery_date;
+        const dayName = order.delivery_day;
+        let message = 'Te contactaremos para confirmar la fecha de entrega.';
+        if (dayName && dateStr) {
+          const [y, m, d] = dateStr.split('-');
+          message = `Tu pedido llegará el ${dayName} ${d}/${m}/${y}`;
+        }
+        setDeliveryInfo({ message, date: dateStr, day_name: dayName });
         await saveCart([]);
         setShowCheckout(false);
         setShowSuccessModal(true);
       } else {
+        const errText = await response.text();
         Alert.alert('Error', 'No se pudo procesar el pedido. Inténtalo de nuevo.');
+        console.error('Order error:', response.status, errText);
       }
     } catch (error) {
       console.error('Error submitting order:', error);
@@ -407,7 +442,11 @@ export default function CartScreen() {
           <ScrollView style={styles.cartList}>
             {cartItems.map((item) => (
               <View key={item.product_id} style={styles.cartItem}>
-                <Image source={{ uri: item.image_url }} style={styles.itemImage} />
+                <Image
+                  source={{ uri: item.image_url }}
+                  style={styles.itemImage}
+                  resizeMode="contain"
+                />
                 <View style={styles.itemInfo}>
                   <Text style={styles.itemName} numberOfLines={2}>
                     {item.product_name}
@@ -432,8 +471,10 @@ export default function CartScreen() {
                 <TouchableOpacity
                   onPress={() => removeItem(item.product_id)}
                   style={styles.removeButton}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Eliminar del carrito"
                 >
-                  <Ionicons name="close-circle" size={28} color="#FF4444" />
+                  <Ionicons name="close-circle" size={32} color="#FF4444" />
                 </TouchableOpacity>
               </View>
             ))}
@@ -528,10 +569,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   itemImage: {
-    width: 80,
-    height: 80,
+    width: 56,
+    height: 56,
     borderRadius: 8,
-    backgroundColor: '#F0F0F0',
+    backgroundColor: '#F5F5F5',
+    overflow: 'hidden',
   },
   itemInfo: {
     flex: 1,
@@ -567,7 +609,12 @@ const styles = StyleSheet.create({
     color: '#333',
   },
   removeButton: {
-    padding: 4,
+    padding: 12,
+    minWidth: 48,
+    minHeight: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+    cursor: 'pointer',
   },
   footer: {
     position: 'absolute',

@@ -8,18 +8,16 @@ import {
   Image,
   ActivityIndicator,
   RefreshControl,
-  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getApiUrl, hasBackend } from '../../lib/api';
 
 const AQUALAN_BLUE = '#0077B6';
 const AQUALAN_LIGHT_BLUE = '#00B4D8';
 const AQUALAN_DARK = '#023E8A';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
 interface Product {
   id: string;
@@ -58,11 +56,15 @@ export default function ProductsScreen() {
   );
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadCart();
+    }, [])
+  );
+
   useEffect(() => {
-    loadCart();
     fetchCategories();
     fetchProducts();
   }, []);
@@ -92,8 +94,9 @@ export default function ProductsScreen() {
   };
 
   const fetchCategories = async () => {
+    if (!hasBackend()) return;
     try {
-      const response = await fetch(`${API_URL}/api/categories`);
+      const response = await fetch(`${getApiUrl()}/api/categories`);
       const data = await response.json();
       setCategories(data);
     } catch (error) {
@@ -102,8 +105,13 @@ export default function ProductsScreen() {
   };
 
   const fetchProducts = async () => {
+    if (!hasBackend()) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
-      let url = `${API_URL}/api/products`;
+      let url = `${getApiUrl()}/api/products`;
       if (selectedCategory) {
         url += `?category=${selectedCategory}`;
       }
@@ -153,11 +161,6 @@ export default function ProductsScreen() {
     return item ? item.quantity : 0;
   };
 
-  const filteredProducts = products.filter((product) =>
-    product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    product.description.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   const getCategoryIcon = (icon: string): keyof typeof Ionicons.glyphMap => {
     const icons: { [key: string]: keyof typeof Ionicons.glyphMap } = {
       water: 'water',
@@ -172,24 +175,9 @@ export default function ProductsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Productos</Text>
-        <View style={styles.searchContainer}>
-          <Ionicons name="search" size={20} color="#999" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Buscar productos..."
-            placeholderTextColor="#999"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Ionicons name="close-circle" size={20} color="#999" />
-            </TouchableOpacity>
-          )}
-        </View>
+      {/* Banner */}
+      <View style={styles.banner}>
+        <Text style={styles.bannerTitle}>Productos</Text>
       </View>
 
       {/* Categories Filter */}
@@ -260,19 +248,22 @@ export default function ProductsScreen() {
             <ActivityIndicator size="large" color={AQUALAN_BLUE} />
             <Text style={styles.loadingText}>Cargando productos...</Text>
           </View>
-        ) : filteredProducts.length === 0 ? (
+        ) : products.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <Ionicons name="search" size={48} color="#CCC" />
-            <Text style={styles.emptyText}>No se encontraron productos</Text>
+            <Ionicons name="cube-outline" size={48} color="#CCC" />
+            <Text style={styles.emptyText}>No hay productos</Text>
           </View>
         ) : (
           <View style={styles.productsGrid}>
-            {filteredProducts.map((product) => (
+            {products.map((product) => (
               <View key={product.id} style={styles.productCard}>
-                <Image
-                  source={{ uri: product.image_url }}
-                  style={styles.productImage}
-                />
+                <View style={styles.productImageWrap}>
+                  <Image
+                    source={{ uri: product.image_url }}
+                    style={styles.productImage}
+                    resizeMode="contain"
+                  />
+                </View>
                 {product.capacity && (
                   <View style={styles.capacityBadge}>
                     <Text style={styles.capacityText}>{product.capacity}</Text>
@@ -321,31 +312,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F5F9FC',
   },
-  header: {
+  banner: {
     backgroundColor: AQUALAN_BLUE,
+    paddingVertical: 28,
     paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  headerTitle: {
-    fontSize: 24,
+  bannerTitle: {
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 44,
-    gap: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#333',
   },
   categoriesScroll: {
     backgroundColor: '#FFFFFF',
@@ -413,10 +390,18 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
+  productImageWrap: {
+    width: '100%',
+    height: 100,
+    backgroundColor: '#F5F5F5',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 8,
+  },
   productImage: {
     width: '100%',
-    height: 160,
-    backgroundColor: '#F0F0F0',
+    height: '100%',
   },
   capacityBadge: {
     position: 'absolute',

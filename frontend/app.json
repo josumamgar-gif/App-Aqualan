@@ -1,20 +1,25 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "AQUALAN",
+    "slug": "aqualan",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "aqualan",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "es.aqualan.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "es.aqualan.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#0077B6"
       },
       "edgeToEdgeEnabled": true
     },
@@ -31,12 +36,26 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#0077B6"
         }
       ]
     ],
     "experiments": {
-      "typedRoutes": true
+      "typedRoutes": true,
+      "baseUrl": "/app"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "6963a6c9-151b-4a7d-8bc2-3cd0ed4cd202"
+      }
+    },
+    "owner": "josu.mambrilla",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/6963a6c9-151b-4a7d-8bc2-3cd0ed4cd202"
     }
   }
 }
