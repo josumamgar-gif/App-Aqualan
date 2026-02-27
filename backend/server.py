@@ -1079,6 +1079,11 @@ async def get_products(category: Optional[str] = None, brand: Optional[str] = No
                 query["brand"] = brand
             products = await db.products.find(query).to_list(100)
             if products:
+                # Forzar siempre la URL de imagen a nuestro backend actual
+                for p in products:
+                    pid = p.get("id")
+                    if pid:
+                        p["image_url"] = f"{_STATIC_BASE}/static/products/{pid}.jpg"
                 return [Product(**p) for p in products]
         except Exception as e:
             logger.warning(f"Error leyendo productos de MongoDB: {e}. Usando lista en memoria.")
@@ -1091,6 +1096,7 @@ async def get_product(product_id: str):
         try:
             product = await db.products.find_one({"id": product_id})
             if product:
+                product["image_url"] = f"{_STATIC_BASE}/static/products/{product_id}.jpg"
                 return Product(**product)
         except Exception:
             pass
