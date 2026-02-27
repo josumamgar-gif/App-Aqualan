@@ -76,6 +76,8 @@ export default function HomeScreen() {
       AsyncStorage.setItem('selected_category', categoryId);
       router.push({ pathname: '/products', params: { category: categoryId } });
     } else {
+      // Hacer pedido → ver TODOS los productos (sin filtro previo)
+      AsyncStorage.removeItem('selected_category');
       router.push('/products');
     }
   };
