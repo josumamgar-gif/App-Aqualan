@@ -53,9 +53,12 @@ SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 SMTP_USER = os.environ.get('SMTP_USER', '')
 SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
 EMAIL_TO = 'pedidos@aqualan.es'
-# Resend.com API (recomendado en Render plan gratis: SMTP está bloqueado)
+# Resend.com API (recomendado en Render plan gratis: SMTP suele estar bloqueado en Railway)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 EMAIL_FROM_RESEND = os.environ.get('EMAIL_FROM', 'AQUALAN <onboarding@resend.dev>')
+# Si RESEND_TEST_EMAIL está definido, todos los envíos de Resend irán a ese correo
+# (útil cuando la cuenta de Resend solo permite enviar a un email de pruebas, ej. josumamgar@gmail.com)
+RESEND_TEST_EMAIL = os.environ.get('RESEND_TEST_EMAIL', '').strip()
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -494,6 +497,13 @@ def _send_email_resend(to: str, subject: str, html: str, from_email: Optional[st
     if not RESEND_API_KEY or not resend:
         return False
     try:
+        original_to = to
+        # Modo prueba: redirigir todos los envíos a un único correo
+        if RESEND_TEST_EMAIL:
+            to = RESEND_TEST_EMAIL
+            subject = f"[TEST para {original_to}] {subject}"
+            html = f"<p><strong>DESTINATARIO REAL:</strong> {original_to}</p>{html}"
+
         resend.api_key = RESEND_API_KEY
         params = {
             "from": from_email or EMAIL_FROM_RESEND,
