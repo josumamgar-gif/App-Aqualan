@@ -21,6 +21,13 @@ try:
 except ImportError:
     resend = None
 
+try:
+    from sendgrid import SendGridAPIClient
+    from sendgrid.helpers.mail import Mail
+except ImportError:
+    SendGridAPIClient = None
+    Mail = None
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -59,6 +66,10 @@ EMAIL_FROM_RESEND = os.environ.get('EMAIL_FROM', 'AQUALAN <onboarding@resend.dev
 # Si RESEND_TEST_EMAIL está definido, todos los envíos de Resend irán a ese correo
 # (útil cuando la cuenta de Resend solo permite enviar a un email de pruebas, ej. josumamgar@gmail.com)
 RESEND_TEST_EMAIL = os.environ.get('RESEND_TEST_EMAIL', '').strip()
+
+# SendGrid API (opción recomendada si Resend da problemas de validación)
+SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '').strip()
+SENDGRID_FROM_EMAIL = os.environ.get('SENDGRID_FROM_EMAIL', '').strip()
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -518,6 +529,29 @@ def _send_email_resend(to: str, subject: str, html: str, from_email: Optional[st
         return False
 
 
+def _send_email_sendgrid(to: str, subject: str, html: str) -> bool:
+    """Envía un email usando la API de SendGrid (HTTPS)."""
+    if not SENDGRID_API_KEY or not SendGridAPIClient or not Mail:
+        return False
+    try:
+        from_email = SENDGRID_FROM_EMAIL or EMAIL_TO
+        message = Mail(
+            from_email=from_email,
+            to_emails=to,
+            subject=subject,
+            html_content=html,
+        )
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        if 200 <= response.status_code < 300:
+            return True
+        logger.error("SendGrid send failed status=%s body=%s", response.status_code, response.body)
+        return False
+    except Exception as e:
+        logger.exception("SendGrid send failed: %s", e)
+        return False
+
+
 def _send_offer_request_email(data: OfferRequestForm) -> bool:
     """Envía a info@aqualan.es la solicitud de oferta con formato claro."""
     provincia_display = data.otra_provincia.strip() if data.ubicacion == "otra" and data.otra_provincia else data.ubicacion.replace("-", " ").title()
@@ -562,7 +596,12 @@ def _send_offer_request_email(data: OfferRequestForm) -> bool:
     """
     subject = f'Oferta solicitada: {data.empresa} - {data.nombre}'
 
-    # 1) Intentar primero por Resend (si está configurado)
+    # 1) Intentar primero por SendGrid (si está configurado)
+    if _send_email_sendgrid(EMAIL_INFO, subject, html_content):
+        logger.info("Email de oferta enviado via SendGrid: %s - %s", data.empresa, data.email)
+        return True
+
+    # 2) Intentar por Resend (si está configurado)
     if RESEND_API_KEY:
         if _send_email_resend(EMAIL_INFO, subject, html_content):
             logger.info("Email de oferta enviado via Resend: %s - %s", data.empresa, data.email)
@@ -570,7 +609,7 @@ def _send_offer_request_email(data: OfferRequestForm) -> bool:
         # Si Resend falla, intentamos SMTP si está disponible
         logger.warning("Resend falló al enviar oferta. Intentando SMTP si está configurado.")
 
-    # 2) Fallback a SMTP si hay credenciales
+    # 3) Fallback a SMTP si hay credenciales
     msg = MIMEMultipart('alternative')
     msg['Subject'] = subject
     msg['To'] = EMAIL_INFO
@@ -761,10 +800,12 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
             header_text = "Confirmación de Pedido"
             intro_text = f"<p>Hola <strong>{order.customer_name}</strong>,</p><p>Hemos recibido tu pedido correctamente. Aquí tienes los detalles:</p>"
             footer_text = "<p>Gracias por confiar en AQUALAN. Si tienes alguna duda, contacta con nosotros en info@aqualan.es o al 946 212 789.</p>"
+            subject = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
         else:
             header_text = "Nuevo Pedido Recibido"
             intro_text = ""
             footer_text = "<p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>"
+            subject = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
         html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -805,10 +846,25 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
         </body>
         </html>
         """
-        # 1) Intentar primero por Resend (si está configurado)
+
+        # 1) Intentar primero por SendGrid (si está configurado)
+        if _send_email_sendgrid(order.customer_email if to_customer else EMAIL_TO, subject, html_content):
+            if to_customer:
+                logger.info("Email de pedido enviado via SendGrid al cliente: %s", order.id)
+                # Intentar copia a la empresa
+                if _send_email_sendgrid(EMAIL_TO, subject, html_content):
+                    logger.info("Email de pedido enviado via SendGrid a empresa: %s", order.id)
+                else:
+                    logger.warning("SendGrid falló al enviar copia de pedido a empresa (pedido %s). Se intentarán otros métodos.", order.id)
+            else:
+                logger.info("Email de pedido enviado via SendGrid a empresa: %s", order.id)
+            return
+        else:
+            logger.warning("SendGrid no está configurado o ha fallado. Se intentará Resend/SMTP.")
+
+        # 2) Intentar por Resend (si está configurado)
         if RESEND_API_KEY:
             if to_customer:
-                subject = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
                 ok_cliente = _send_email_resend(order.customer_email, subject, html_content)
                 ok_empresa = _send_email_resend(EMAIL_TO, subject, html_content)
                 if ok_cliente and ok_empresa:
@@ -816,14 +872,13 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
                     return
                 logger.warning("Resend falló al enviar pedido (cliente_ok=%s, empresa_ok=%s). Se intentará SMTP si está configurado.", ok_cliente, ok_empresa)
             else:
-                subject = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
                 ok_empresa = _send_email_resend(EMAIL_TO, subject, html_content)
                 if ok_empresa:
                     logger.info("Email de pedido enviado via Resend solo a empresa: %s", order.id)
                     return
                 logger.warning("Resend falló al enviar pedido a empresa. Se intentará SMTP si está configurado.")
 
-        # 2) Fallback a SMTP si hay credenciales
+        # 3) Fallback a SMTP si hay credenciales
         if not (SMTP_USER and SMTP_PASSWORD):
             logger.warning("Email de pedido: ni Resend funcionó ni SMTP está configurado correctamente.")
             return
