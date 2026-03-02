@@ -664,6 +664,8 @@ async def send_order_email(order: Order, delivery_info: dict, to_customer: bool 
         if to_customer:
             msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
             msg['To'] = order.customer_email
+            # Copia oculta a la empresa para cada confirmación al cliente
+            msg['Bcc'] = EMAIL_TO
         else:
             msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
             msg['To'] = EMAIL_TO
@@ -787,21 +789,27 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
         </html>
         """
         if RESEND_API_KEY:
+            # Con Resend enviamos un email al cliente y una copia independiente a la empresa
             if to_customer:
                 subject = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
-                to_email = order.customer_email
+                # Cliente
+                if not _send_email_resend(order.customer_email, subject, html_content):
+                    raise RuntimeError("Resend falló al enviar al cliente")
+                # Copia a la empresa
+                if not _send_email_resend(EMAIL_TO, subject, html_content):
+                    raise RuntimeError("Resend falló al enviar copia a empresa")
             else:
                 subject = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
-                to_email = EMAIL_TO
-            if _send_email_resend(to_email, subject, html_content):
-                logger.info("Email de pedido enviado via Resend: %s (to_customer=%s)", order.id, to_customer)
-            else:
-                raise RuntimeError("Resend falló")
+                if not _send_email_resend(EMAIL_TO, subject, html_content):
+                    raise RuntimeError("Resend falló al enviar a empresa")
+            logger.info("Email de pedido enviado via Resend: %s (to_customer=%s)", order.id, to_customer)
             return
         msg = MIMEMultipart('alternative')
         if to_customer:
             msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
             msg['To'] = order.customer_email
+            # Copia oculta a la empresa para cada confirmación al cliente
+            msg['Bcc'] = EMAIL_TO
         else:
             msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
             msg['To'] = EMAIL_TO

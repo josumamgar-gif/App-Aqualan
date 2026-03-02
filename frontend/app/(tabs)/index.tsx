@@ -61,11 +61,17 @@ export default function HomeScreen() {
 
   const getCategoryIcon = (icon: string) => {
     const icons: { [key: string]: keyof typeof Ionicons.glyphMap } = {
+      // botellones (no se usa aquí porque lleva icono propio)
       water: 'water',
-      leaf: 'leaf',
-      flask: 'flask',
-      beaker: 'beaker',
-      cup: 'cafe',
+      // ecobox → caja ecológica
+      leaf: 'cube',
+      // botellines → botella pequeña
+      flask: 'wine',
+      // dispensadores → grifo / agua
+      beaker: 'water',
+      // vasos → vaso de plástico
+      cup: 'cup',
+      // café
       cafe: 'cafe',
     };
     return icons[icon] || 'cube';
@@ -216,23 +222,9 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Eres nuevo - Formulario oferta */}
-        <View style={styles.newSection}>
-          <Text style={styles.newSectionTitle}>¿Eres nuevo y estás interesado?</Text>
-          <Text style={styles.newSectionText}>
-            Mándanos tu formulario y te enviamos una oferta adecuada a lo que nos solicitas.
-          </Text>
-          <TouchableOpacity
-            style={styles.newSectionButton}
-            onPress={() => router.push('/offer')}
-          >
-            <Text style={styles.newSectionButtonText}>Rellenar formulario</Text>
-          </TouchableOpacity>
-        </View>
-
         {/* Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>AQUALAN © 2025</Text>
+          <Text style={styles.footerText}>AQUALAN © {new Date().getFullYear()}</Text>
           <Text style={styles.footerSubtext}>Distribuidora de Agua Embotellada</Text>
         </View>
       </ScrollView>
@@ -428,40 +420,6 @@ const styles = StyleSheet.create({
   },
   ctaButtonText: {
     color: AQUALAN_BLUE,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  newSection: {
-    backgroundColor: '#FFFFFF',
-    padding: 24,
-    margin: 20,
-    marginTop: 0,
-    borderRadius: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  newSectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: AQUALAN_DARK,
-    textAlign: 'center',
-  },
-  newSectionText: {
-    fontSize: 14,
-    color: '#555',
-    marginTop: 10,
-    textAlign: 'center',
-  },
-  newSectionButton: {
-    backgroundColor: AQUALAN_BLUE,
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 8,
-    marginTop: 16,
-  },
-  newSectionButtonText: {
-    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },

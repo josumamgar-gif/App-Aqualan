@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Linking,
-  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -45,19 +44,9 @@ export default function ContactScreen() {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Hero Section */}
+        {/* Banner Contacto */}
         <View style={styles.heroSection}>
-          <Image
-            source={{ uri: 'https://images.unsplash.com/photo-1637905351378-67232a5f0c9b?w=800' }}
-            style={styles.heroImage}
-          />
-          <View style={styles.heroOverlay}>
-            <Ionicons name="water" size={48} color="#FFFFFF" />
-            <Text style={styles.heroTitle}>AQUALAN</Text>
-            <Text style={styles.heroSubtitle}>
-              Distribuidora de Agua Embotellada
-            </Text>
-          </View>
+          <Text style={styles.heroBannerText}>Contacto</Text>
         </View>
 
         {/* Contact Cards */}
@@ -128,7 +117,7 @@ export default function ContactScreen() {
           <Text style={styles.sectionTitle}>Zonas de Entrega</Text>
           <Text style={styles.sectionSubtitle}>Entrega en 24/48 horas</Text>
           <View style={styles.zonesList}>
-            {['Bizkaia', 'Gipuzkoa', 'Álava', 'Cantabria', 'Navarra'].map(
+            {['Bizkaia', 'Gipuzkoa', 'Álava', 'Cantabria', 'Navarra', 'Resto de España'].map(
               (zone) => (
                 <View key={zone} style={styles.zoneItem}>
                   <Ionicons
@@ -170,7 +159,7 @@ export default function ContactScreen() {
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>AQUALAN © 2025</Text>
+          <Text style={styles.footerText}>AQUALAN © {new Date().getFullYear()}</Text>
           <Text style={styles.footerSubtext}>
             Agua Mineral Natural del Manantial de San Andrés
           </Text>
@@ -199,34 +188,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   heroSection: {
-    position: 'relative',
-    height: 200,
-  },
-  heroImage: {
-    width: '100%',
-    height: '100%',
-  },
-  heroOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 119, 182, 0.85)',
+    height: 80,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#F5F9FC',
   },
-  heroTitle: {
-    fontSize: 32,
+  heroBannerText: {
+    fontSize: 28,
     fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginTop: 8,
-    letterSpacing: 3,
-  },
-  heroSubtitle: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.9)',
-    marginTop: 4,
+    color: AQUALAN_DARK,
   },
   cardsContainer: {
     padding: 16,
