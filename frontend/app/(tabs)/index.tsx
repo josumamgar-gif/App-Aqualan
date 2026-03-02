@@ -38,9 +38,30 @@ export default function HomeScreen() {
   const router = useRouter();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [installPromptEvent, setInstallPromptEvent] = useState<any | null>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
 
   useEffect(() => {
     fetchCategories();
+  }, []);
+
+  // Detecta el evento PWA "beforeinstallprompt" en navegadores compatibles
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    // Si el usuario ya lo ha rechazado, no volver a mostrarlo
+    const dismissed = window.localStorage.getItem('aqualan_install_dismissed');
+    if (dismissed === 'true') return;
+
+    const handler = (e: any) => {
+      e.preventDefault();
+      setInstallPromptEvent(e);
+      setShowInstallBanner(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handler);
+    };
   }, []);
 
   const fetchCategories = async () => {
@@ -57,6 +78,37 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleInstallPress = async () => {
+    if (typeof window === 'undefined') return;
+    if (installPromptEvent) {
+      installPromptEvent.prompt();
+      try {
+        const choiceResult = await installPromptEvent.userChoice;
+        window.localStorage.setItem('aqualan_install_dismissed', 'true');
+        setShowInstallBanner(false);
+        setInstallPromptEvent(null);
+      } catch {
+        window.localStorage.setItem('aqualan_install_dismissed', 'true');
+        setShowInstallBanner(false);
+        setInstallPromptEvent(null);
+      }
+    } else {
+      // Fallback genérico para navegadores sin beforeinstallprompt (ej. Safari)
+      window.alert(
+        'Para guardar AQUALAN en tu móvil, usa la opción "Añadir a pantalla de inicio" de tu navegador.'
+      );
+      window.localStorage.setItem('aqualan_install_dismissed', 'true');
+      setShowInstallBanner(false);
+    }
+  };
+
+  const handleInstallDismiss = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('aqualan_install_dismissed', 'true');
+    }
+    setShowInstallBanner(false);
   };
 
   const getCategoryIcon = (icon: string) => {
@@ -228,6 +280,34 @@ export default function HomeScreen() {
           <Text style={styles.footerSubtext}>Distribuidora de Agua Embotellada</Text>
         </View>
       </ScrollView>
+
+      {/* Banner para instalar como app en el móvil (solo web/PWA) */}
+      {showInstallBanner && (
+        <View style={styles.installBannerWrapper}>
+          <View style={styles.installBanner}>
+            <View style={styles.installBannerHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.installTitle}>¿Quieres guardar AQUALAN en tu móvil?</Text>
+                <Text style={styles.installSubtitle}>
+                  Añádela a tu pantalla de inicio para tener acceso rápido a tus pedidos.
+                </Text>
+              </View>
+              <Ionicons name="phone-portrait-outline" size={24} color={AQUALAN_BLUE} />
+            </View>
+            <View style={styles.installActions}>
+              <TouchableOpacity
+                style={styles.installPrimaryButton}
+                onPress={handleInstallPress}
+              >
+                <Text style={styles.installPrimaryButtonText}>Añadir a inicio</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleInstallDismiss}>
+                <Text style={styles.installSecondaryText}>Ahora no</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -422,6 +502,63 @@ const styles = StyleSheet.create({
     color: AQUALAN_BLUE,
     fontSize: 16,
     fontWeight: '600',
+  },
+  installBannerWrapper: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  installBanner: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  installBannerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    columnGap: 12,
+  },
+  installTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: AQUALAN_DARK,
+  },
+  installSubtitle: {
+    fontSize: 13,
+    color: '#555',
+    marginTop: 4,
+  },
+  installActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  installPrimaryButton: {
+    backgroundColor: AQUALAN_BLUE,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  installPrimaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  installSecondaryText: {
+    fontSize: 14,
+    color: '#777',
+    marginLeft: 12,
   },
   footer: {
     padding: 24,
