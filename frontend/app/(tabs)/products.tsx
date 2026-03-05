@@ -277,7 +277,7 @@ export default function ProductsScreen() {
                   <Image
                     source={{ uri: product.image_url }}
                     style={styles.productImage}
-                    resizeMode="cover"
+                    resizeMode="contain"
                   />
                 </View>
                 {product.capacity && (
