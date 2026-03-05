@@ -572,7 +572,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 8,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#FFFFFF',
     overflow: 'hidden',
   },
   itemInfo: {
