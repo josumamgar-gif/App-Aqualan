@@ -58,8 +58,6 @@ export default function ProductsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
-  const [previewTitle, setPreviewTitle] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -185,45 +183,8 @@ export default function ProductsScreen() {
     return icons[icon] || 'cube';
   };
 
-  const closePreview = () => {
-    setPreviewImageUrl(null);
-    setPreviewTitle(null);
-  };
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {previewImageUrl && (
-        <Modal
-          visible={!!previewImageUrl}
-          transparent
-          animationType="fade"
-          onRequestClose={closePreview}
-        >
-          <TouchableWithoutFeedback onPress={closePreview}>
-            <View style={styles.previewOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.previewContent}>
-                  <TouchableOpacity
-                    style={styles.previewCloseButton}
-                    onPress={closePreview}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="close" size={26} color="#FFFFFF" />
-                  </TouchableOpacity>
-                  <Image
-                    source={{ uri: previewImageUrl }}
-                    style={styles.previewImage}
-                    resizeMode="contain"
-                  />
-                  {previewTitle && (
-                    <Text style={styles.previewTitle}>{previewTitle}</Text>
-                  )}
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-      )}
       {/* Banner */}
       <View style={styles.banner}>
         <Text style={styles.bannerTitle}>Productos</Text>
@@ -312,21 +273,13 @@ export default function ProductsScreen() {
           <View style={styles.productsGrid}>
             {products.map((product) => (
               <View key={product.id} style={styles.productCard}>
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={() => {
-                    setPreviewImageUrl(product.image_url);
-                    setPreviewTitle(product.name);
-                  }}
-                >
-                  <View style={styles.productImageWrap}>
-                    <Image
-                      source={{ uri: product.image_url }}
-                      style={styles.productImage}
-                      resizeMode="contain"
-                    />
-                  </View>
-                </TouchableOpacity>
+                <View style={styles.productImageWrap}>
+                  <Image
+                    source={{ uri: product.image_url }}
+                    style={styles.productImage}
+                    resizeMode="contain"
+                  />
+                </View>
                 {product.capacity && (
                   <View style={styles.capacityBadge}>
                     <Text style={styles.capacityText}>{product.capacity}</Text>
@@ -456,7 +409,7 @@ const styles = StyleSheet.create({
   productImageWrap: {
     width: '100%',
     height: 200,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#FFFFFF',
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
