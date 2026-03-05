@@ -273,7 +273,7 @@ export default function CartScreen() {
           )}
           
           <Text style={styles.successSubMessage}>
-            Te contactaremos pronto para confirmar los detalles.
+            Te contactaremos pronto para confirmar los detalles. Revisa también tu bandeja de spam por si el email de confirmación entra ahí.
           </Text>
           
           <TouchableOpacity
