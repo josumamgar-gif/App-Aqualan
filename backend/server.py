@@ -21,12 +21,6 @@ try:
 except ImportError:
     resend = None
 
-try:
-    from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Mail
-except ImportError:
-    SendGridAPIClient = None
-    Mail = None
 
 
 ROOT_DIR = Path(__file__).parent
@@ -67,9 +61,6 @@ EMAIL_FROM_RESEND = os.environ.get('EMAIL_FROM', 'AQUALAN <onboarding@resend.dev
 # (útil cuando la cuenta de Resend solo permite enviar a un email de pruebas, ej. josumamgar@gmail.com)
 RESEND_TEST_EMAIL = os.environ.get('RESEND_TEST_EMAIL', '').strip()
 
-# SendGrid API (opción recomendada si Resend da problemas de validación)
-SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '').strip()
-SENDGRID_FROM_EMAIL = os.environ.get('SENDGRID_FROM_EMAIL', '').strip()
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -529,28 +520,6 @@ def _send_email_resend(to: str, subject: str, html: str, from_email: Optional[st
         return False
 
 
-def _send_email_sendgrid(to: str, subject: str, html: str) -> bool:
-    """Envía un email usando la API de SendGrid (HTTPS)."""
-    if not SENDGRID_API_KEY or not SendGridAPIClient or not Mail:
-        return False
-    try:
-        from_email = SENDGRID_FROM_EMAIL or EMAIL_TO
-        message = Mail(
-            from_email=from_email,
-            to_emails=to,
-            subject=subject,
-            html_content=html,
-        )
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        response = sg.send(message)
-        if 200 <= response.status_code < 300:
-            return True
-        logger.error("SendGrid send failed status=%s body=%s", response.status_code, response.body)
-        return False
-    except Exception as e:
-        logger.exception("SendGrid send failed: %s", e)
-        return False
-
 
 def _send_offer_request_email(data: OfferRequestForm) -> bool:
     """Envía a info@aqualan.es la solicitud de oferta con formato claro."""
@@ -596,45 +565,37 @@ def _send_offer_request_email(data: OfferRequestForm) -> bool:
     """
     subject = f'Oferta solicitada: {data.empresa} - {data.nombre}'
 
-    # 1) Intentar primero por SendGrid (si está configurado)
-    if _send_email_sendgrid(EMAIL_INFO, subject, html_content):
-        logger.info("Email de oferta enviado via SendGrid: %s - %s", data.empresa, data.email)
-        return True
+    # 1) Intentar primero por SMTP (servidor propio)
+    if SMTP_USER and SMTP_PASSWORD:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['To'] = EMAIL_INFO
+        msg['From'] = SMTP_USER
+        msg.attach(MIMEText(html_content, 'html'))
+        try:
+            if SMTP_PORT == 465:
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                    server.starttls()
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                    server.send_message(msg)
+            logger.info("Email de oferta enviado via SMTP: %s - %s", data.empresa, data.email)
+            return True
+        except Exception as e:
+            logger.exception("SMTP falló al enviar oferta. Intentando Resend: %s", e)
 
-    # 2) Intentar por Resend (si está configurado)
+    # 2) Fallback a Resend si SMTP no está disponible o falló
     if RESEND_API_KEY:
         if _send_email_resend(EMAIL_INFO, subject, html_content):
             logger.info("Email de oferta enviado via Resend: %s - %s", data.empresa, data.email)
             return True
-        # Si Resend falla, intentamos SMTP si está disponible
-        logger.warning("Resend falló al enviar oferta. Intentando SMTP si está configurado.")
+        logger.warning("Resend también falló al enviar oferta.")
 
-    # 3) Fallback a SMTP si hay credenciales
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['To'] = EMAIL_INFO
-    msg['From'] = SMTP_USER if SMTP_USER else 'pedidos@aqualan.es'
-    msg.attach(MIMEText(html_content, 'html'))
-
-    if not SMTP_USER or not SMTP_PASSWORD:
-        logger.warning("Oferta solicitada: ni Resend funcionó ni SMTP está configurado correctamente.")
-        return False
-
-    try:
-        if SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                server.starttls()
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.send_message(msg)
-        logger.info("Email de oferta enviado correctamente por SMTP: %s - %s", data.empresa, data.email)
-        return True
-    except Exception as e:
-        logger.exception("Error enviando email de oferta por SMTP: %s", e)
-        return False
+    logger.warning("Oferta solicitada: ni SMTP ni Resend están configurados correctamente.")
+    return False
 
 
 async def send_order_email(order: Order, delivery_info: dict, to_customer: bool = False):
@@ -781,9 +742,9 @@ async def send_order_email(order: Order, delivery_info: dict, to_customer: bool 
 
 
 def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool) -> None:
-    """Envía el email del pedido. Usa Resend si RESEND_API_KEY está definido, si no SMTP."""
-    if not RESEND_API_KEY and not (SMTP_USER and SMTP_PASSWORD):
-        logger.warning("Email de pedido: ni RESEND_API_KEY ni SMTP configurados.")
+    """Envía el email del pedido. Usa SMTP (servidor propio) primero, Resend como fallback."""
+    if not (SMTP_USER and SMTP_PASSWORD) and not RESEND_API_KEY:
+        logger.warning("Email de pedido: ni SMTP ni RESEND_API_KEY configurados.")
         return
     try:
         items_html = ""
@@ -847,22 +808,42 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
         </html>
         """
 
-        # 1) Intentar primero por SendGrid (si está configurado)
-        if _send_email_sendgrid(order.customer_email if to_customer else EMAIL_TO, subject, html_content):
-            if to_customer:
-                logger.info("Email de pedido enviado via SendGrid al cliente: %s", order.id)
-                # Intentar copia a la empresa
-                if _send_email_sendgrid(EMAIL_TO, subject, html_content):
-                    logger.info("Email de pedido enviado via SendGrid a empresa: %s", order.id)
+        # 1) Intentar primero por SMTP (servidor propio)
+        smtp_ok = False
+        if SMTP_USER and SMTP_PASSWORD:
+            try:
+                msg = MIMEMultipart('alternative')
+                if to_customer:
+                    msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
+                    msg['To'] = order.customer_email
+                    msg['Bcc'] = EMAIL_TO
                 else:
-                    logger.warning("SendGrid falló al enviar copia de pedido a empresa (pedido %s). Se intentarán otros métodos.", order.id)
-            else:
-                logger.info("Email de pedido enviado via SendGrid a empresa: %s", order.id)
-            return
-        else:
-            logger.warning("SendGrid no está configurado o ha fallado. Se intentará Resend/SMTP.")
+                    msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
+                    msg['To'] = EMAIL_TO
+                msg['From'] = SMTP_USER
+                text_content = f"\nPedido: #{order.id[:8].upper()}\nFecha: {order.created_at.strftime('%d/%m/%Y %H:%M')}\nFECHA DE ENTREGA: {delivery_message}\n\n"
+                for item in order.items:
+                    text_content += f"- {item.quantity}x {item.product_name} ({item.unit})\n"
+                if order.notes:
+                    text_content += f"\nNOTAS: {order.notes}"
+                msg.attach(MIMEText(text_content, 'plain'))
+                msg.attach(MIMEText(html_content, 'html'))
+                if SMTP_PORT == 465:
+                    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                        server.login(SMTP_USER, SMTP_PASSWORD)
+                        server.send_message(msg)
+                else:
+                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                        server.starttls()
+                        server.login(SMTP_USER, SMTP_PASSWORD)
+                        server.send_message(msg)
+                smtp_ok = True
+                logger.info("Email de pedido enviado via SMTP: %s (to_customer=%s)", order.id, to_customer)
+                return
+            except Exception as e:
+                logger.exception("SMTP falló para pedido %s. Intentando Resend: %s", order.id, e)
 
-        # 2) Intentar por Resend (si está configurado)
+        # 2) Fallback a Resend si SMTP no está disponible o falló
         if RESEND_API_KEY:
             if to_customer:
                 ok_cliente = _send_email_resend(order.customer_email, subject, html_content)
@@ -870,48 +851,16 @@ def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool)
                 if ok_cliente and ok_empresa:
                     logger.info("Email de pedido enviado via Resend: %s (cliente y empresa)", order.id)
                     return
-                logger.warning("Resend falló al enviar pedido (cliente_ok=%s, empresa_ok=%s). Se intentará SMTP si está configurado.", ok_cliente, ok_empresa)
+                logger.warning("Resend falló al enviar pedido (cliente_ok=%s, empresa_ok=%s).", ok_cliente, ok_empresa)
             else:
                 ok_empresa = _send_email_resend(EMAIL_TO, subject, html_content)
                 if ok_empresa:
-                    logger.info("Email de pedido enviado via Resend solo a empresa: %s", order.id)
+                    logger.info("Email de pedido enviado via Resend a empresa: %s", order.id)
                     return
-                logger.warning("Resend falló al enviar pedido a empresa. Se intentará SMTP si está configurado.")
+                logger.warning("Resend también falló al enviar pedido a empresa.")
 
-        # 3) Fallback a SMTP si hay credenciales
-        if not (SMTP_USER and SMTP_PASSWORD):
-            logger.warning("Email de pedido: ni Resend funcionó ni SMTP está configurado correctamente.")
-            return
-
-        msg = MIMEMultipart('alternative')
-        if to_customer:
-            msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
-            msg['To'] = order.customer_email
-            # Copia oculta a la empresa para cada confirmación al cliente
-            msg['Bcc'] = EMAIL_TO
-        else:
-            msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
-            msg['To'] = EMAIL_TO
-        msg['From'] = SMTP_USER or 'pedidos@aqualan.es'
-        text_content = f"\nPedido: #{order.id[:8].upper()}\nFecha: {order.created_at.strftime('%d/%m/%Y %H:%M')}\nFECHA DE ENTREGA: {delivery_message}\n\n"
-        for item in order.items:
-            text_content += f"- {item.quantity}x {item.product_name} ({item.unit})\n"
-        if order.notes:
-            text_content += f"\nNOTAS: {order.notes}"
-        msg.attach(MIMEText(text_content, 'plain'))
-        msg.attach(MIMEText(html_content, 'html'))
-
-        if SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                server.starttls()
-                server.login(SMTP_USER, SMTP_PASSWORD)
-                server.send_message(msg)
-
-        logger.info("Email de pedido enviado correctamente por SMTP: %s (to_customer=%s)", order.id, to_customer)
+        if not smtp_ok:
+            logger.warning("Email de pedido %s: ni SMTP ni Resend funcionaron correctamente.", order.id)
     except Exception as e:
         logger.exception("Error enviando email de pedido (background): %s", e)
 
@@ -1218,7 +1167,7 @@ async def get_delivery_date(city: str):
 @api_router.post("/offer-request")
 async def submit_offer_request(data: OfferRequestForm):
     """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es."""
-    has_email = bool(RESEND_API_KEY or (SMTP_USER and SMTP_PASSWORD))
+    has_email = bool((SMTP_USER and SMTP_PASSWORD) or RESEND_API_KEY)
     if not has_email:
         logger.warning("offer-request: Ni RESEND_API_KEY ni SMTP configurados. Configura uno en el panel (Render/Railway).")
         raise HTTPException(status_code=503, detail="Servicio de email no configurado. Contacta con el administrador.")
@@ -1267,7 +1216,7 @@ async def create_order(order_data: OrderCreate):
         _orders_in_memory.append(order.dict())
     
     # Enviar emails (esperamos a que se envíen para que no se pierdan en Render)
-    has_email = bool(RESEND_API_KEY or (SMTP_USER and SMTP_PASSWORD))
+    has_email = bool((SMTP_USER and SMTP_PASSWORD) or RESEND_API_KEY)
     if not has_email:
         logger.warning("create_order: Ni RESEND_API_KEY ni SMTP configurados. No se envían emails.")
     else:
