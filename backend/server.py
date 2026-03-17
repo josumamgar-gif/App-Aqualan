@@ -1144,7 +1144,7 @@ app.add_middleware(
 async def startup_event():
     _load_routes_from_excel()
     await seed_products()
-    logger.info("Application started and products seeded")
+    logger.info("Application started and products seeded — v2.1 WP Mail SMTP")
     logger.info("Email config: WP Mail endpoint=%s | Resend fallback: %s", WP_MAIL_ENDPOINT, "sí" if RESEND_API_KEY else "no")
     logger.info("POST /api/offer-request disponible para solicitudes de oferta -> info@aqualan.es")
 
