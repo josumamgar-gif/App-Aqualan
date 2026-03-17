@@ -12,9 +12,7 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timedelta, date
 from bson import ObjectId
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests as http_requests
 
 try:
     import resend
@@ -49,17 +47,13 @@ except Exception as e:
     logging.warning(f"MongoDB no disponible: {e}. Se usarán productos en memoria.")
 
 # Email configuration
-SMTP_SERVER = os.environ.get('SMTP_SERVER', 'mail.aqualan.es')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
-SMTP_USER = os.environ.get('SMTP_USER', '')
-SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
 EMAIL_TO = 'pedidos@aqualan.es'
-# Resend.com API (recomendado en Render plan gratis: SMTP suele estar bloqueado en Railway)
+# WordPress WP Mail SMTP — endpoint REST en la web de Aqualan (usa info@aqualan.es)
+WP_MAIL_ENDPOINT = os.environ.get('WP_MAIL_ENDPOINT', 'https://aqualan.es/wp-json/aqualan/v1/send-email')
+WP_MAIL_API_KEY  = os.environ.get('WP_MAIL_API_KEY', 'AQUALAN_SECRET_2024')
+# Resend.com API — fallback si el endpoint de WordPress no está disponible
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 EMAIL_FROM_RESEND = os.environ.get('EMAIL_FROM', 'AQUALAN <onboarding@resend.dev>')
-# Si RESEND_TEST_EMAIL está definido, todos los envíos de Resend irán a ese correo
-# (útil cuando la cuenta de Resend solo permite enviar a un email de pruebas, ej. josumamgar@gmail.com)
-RESEND_TEST_EMAIL = os.environ.get('RESEND_TEST_EMAIL', '').strip()
 
 
 # Create the main app without a prefix
@@ -494,18 +488,29 @@ class OfferRequestForm(BaseModel):
     mensaje: Optional[str] = None
 
 
+def _send_email_wp(to: str, subject: str, html: str) -> bool:
+    """Envía un email via el endpoint REST de WordPress (usa WP Mail SMTP con info@aqualan.es)."""
+    try:
+        resp = http_requests.post(
+            WP_MAIL_ENDPOINT,
+            json={"to": to, "subject": subject, "html": html},
+            headers={"X-API-Key": WP_MAIL_API_KEY, "Content-Type": "application/json", "User-Agent": "AQUALAN-App/1.0"},
+            timeout=15,
+        )
+        if resp.ok and resp.json().get("success"):
+            return True
+        logger.error("WP Mail endpoint error: status=%s body=%s", resp.status_code, resp.text)
+        return False
+    except Exception as e:
+        logger.exception("WP Mail endpoint falló: %s", e)
+        return False
+
+
 def _send_email_resend(to: str, subject: str, html: str, from_email: Optional[str] = None) -> bool:
-    """Envía un email usando la API de Resend (HTTPS). Funciona en Render/Railway."""
+    """Envía un email usando la API de Resend (HTTPS). Fallback si WP Mail no está disponible."""
     if not RESEND_API_KEY or not resend:
         return False
     try:
-        original_to = to
-        # Modo prueba: redirigir todos los envíos a un único correo
-        if RESEND_TEST_EMAIL:
-            to = RESEND_TEST_EMAIL
-            subject = f"[TEST para {original_to}] {subject}"
-            html = f"<p><strong>DESTINATARIO REAL:</strong> {original_to}</p>{html}"
-
         resend.api_key = RESEND_API_KEY
         params = {
             "from": from_email or EMAIL_FROM_RESEND,
@@ -565,302 +570,131 @@ def _send_offer_request_email(data: OfferRequestForm) -> bool:
     """
     subject = f'Oferta solicitada: {data.empresa} - {data.nombre}'
 
-    # 1) Intentar primero por SMTP (servidor propio)
-    if SMTP_USER and SMTP_PASSWORD:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['To'] = EMAIL_INFO
-        msg['From'] = SMTP_USER
-        msg.attach(MIMEText(html_content, 'html'))
-        try:
-            if SMTP_PORT == 465:
-                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                    server.login(SMTP_USER, SMTP_PASSWORD)
-                    server.send_message(msg)
-            else:
-                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                    server.starttls()
-                    server.login(SMTP_USER, SMTP_PASSWORD)
-                    server.send_message(msg)
-            logger.info("Email de oferta enviado via SMTP: %s - %s", data.empresa, data.email)
-            return True
-        except Exception as e:
-            logger.exception("SMTP falló al enviar oferta. Intentando Resend: %s", e)
+    # 1) WordPress WP Mail SMTP (info@aqualan.es)
+    if _send_email_wp(EMAIL_INFO, subject, html_content):
+        logger.info("Email de oferta enviado via WP Mail: %s - %s", data.empresa, data.email)
+        return True
+    logger.warning("WP Mail falló al enviar oferta. Intentando Resend.")
 
-    # 2) Fallback a Resend si SMTP no está disponible o falló
-    if RESEND_API_KEY:
-        if _send_email_resend(EMAIL_INFO, subject, html_content):
-            logger.info("Email de oferta enviado via Resend: %s - %s", data.empresa, data.email)
-            return True
-        logger.warning("Resend también falló al enviar oferta.")
+    # 2) Fallback a Resend
+    if _send_email_resend(EMAIL_INFO, subject, html_content):
+        logger.info("Email de oferta enviado via Resend: %s - %s", data.empresa, data.email)
+        return True
 
-    logger.warning("Oferta solicitada: ni SMTP ni Resend están configurados correctamente.")
+    logger.warning("Oferta solicitada: ni WP Mail ni Resend funcionaron.")
     return False
 
 
+def _build_order_html(order, delivery_message: str, to_customer: bool) -> tuple[str, str]:
+    """Genera el HTML y subject del email de pedido."""
+    items_html = "".join(
+        f"<tr>"
+        f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.product_name}</td>"
+        f"<td style='padding:10px;border-bottom:1px solid #eee;text-align:center;'>{item.quantity}</td>"
+        f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.unit}</td>"
+        f"</tr>"
+        for item in order.items
+    )
+    if to_customer:
+        header_text = "Confirmación de Pedido"
+        intro_text  = f"<p>Hola <strong>{order.customer_name}</strong>,</p><p>Hemos recibido tu pedido correctamente. Aquí tienes los detalles:</p>"
+        footer_text = "<p>Gracias por confiar en AQUALAN. Si tienes alguna duda, contacta con nosotros en info@aqualan.es o al 946 212 789.</p>"
+        subject     = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
+    else:
+        header_text = "Nuevo Pedido Recibido"
+        intro_text  = ""
+        footer_text = "<p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>"
+        subject     = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
+
+    notes_html = (
+        f"<div style='margin-top:20px;padding:15px;background-color:#fff3cd;border-radius:8px;'>"
+        f"<h4 style='margin-top:0;'>📝 Notas:</h4><p>{order.notes}</p></div>"
+        if order.notes else ""
+    )
+    html = f"""
+    <html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+        <div style="background-color:#0077B6;color:white;padding:20px;text-align:center;">
+            <h1 style="margin:0;">AQUALAN</h1>
+            <p style="margin:5px 0 0 0;">{header_text}</p>
+        </div>
+        <div style="padding:20px;">
+            {intro_text}
+            <h2 style="color:#0077B6;">Pedido #{order.id[:8].upper()}</h2>
+            <p><strong>Fecha:</strong> {order.created_at.strftime('%d/%m/%Y %H:%M')}</p>
+            <div style="background-color:#e8f4f8;padding:15px;border-radius:8px;margin:20px 0;">
+                <h3 style="color:#023E8A;margin-top:0;">📅 Fecha de Entrega</h3>
+                <p style="font-size:18px;font-weight:bold;color:#0077B6;">{delivery_message}</p>
+            </div>
+            <h3 style="color:#023E8A;">👤 Datos de Entrega</h3>
+            <table style="width:100%;border-collapse:collapse;">
+                <tr><td style="padding:5px;"><strong>Nombre:</strong></td><td>{order.customer_name}</td></tr>
+                <tr><td style="padding:5px;"><strong>Email:</strong></td><td>{order.customer_email}</td></tr>
+                <tr><td style="padding:5px;"><strong>Teléfono:</strong></td><td>{order.customer_phone}</td></tr>
+                <tr><td style="padding:5px;"><strong>Ciudad:</strong></td><td>{order.delivery_city}</td></tr>
+                <tr><td style="padding:5px;"><strong>Dirección:</strong></td><td>{order.delivery_address}</td></tr>
+            </table>
+            <h3 style="color:#023E8A;">📦 Productos Solicitados</h3>
+            <table style="width:100%;border-collapse:collapse;background-color:#f9f9f9;">
+                <thead><tr style="background-color:#0077B6;color:white;">
+                    <th style="padding:10px;text-align:left;">Producto</th>
+                    <th style="padding:10px;text-align:center;">Cantidad</th>
+                    <th style="padding:10px;text-align:left;">Unidad</th>
+                </tr></thead>
+                <tbody>{items_html}</tbody>
+            </table>
+            {notes_html}
+        </div>
+        <div style="background-color:#f5f5f5;padding:15px;text-align:center;font-size:12px;color:#666;">
+            {footer_text}
+        </div>
+    </body></html>
+    """
+    return subject, html
+
+
 async def send_order_email(order: Order, delivery_info: dict, to_customer: bool = False):
-    """Envía email con los detalles del pedido"""
+    """Envía email del pedido vía WP Mail (info@aqualan.es) o Resend como fallback."""
     try:
-        # Crear el contenido del email
-        items_html = ""
-        for item in order.items:
-            items_html += f"""
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">{item.product_name}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">{item.quantity}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">{item.unit}</td>
-            </tr>
-            """
-        
         delivery_message = delivery_info.get('message', 'Fecha por confirmar')
-        
-        if to_customer:
-            # Email para el cliente
-            header_text = "Confirmación de Pedido"
-            intro_text = f"<p>Hola <strong>{order.customer_name}</strong>,</p><p>Hemos recibido tu pedido correctamente. Aquí tienes los detalles:</p>"
-            footer_text = "<p>Gracias por confiar en AQUALAN. Si tienes alguna duda, contacta con nosotros en info@aqualan.es o al 946 212 789.</p>"
+        subject, html = _build_order_html(order, delivery_message, to_customer)
+        dest = order.customer_email if to_customer else EMAIL_TO
+        ok = await asyncio.to_thread(_send_email_wp, dest, subject, html)
+        if not ok:
+            ok = await asyncio.to_thread(_send_email_resend, dest, subject, html)
+        if to_customer and ok:
+            # Copia a la empresa
+            await asyncio.to_thread(_send_email_wp, EMAIL_TO, subject, html)
+        if ok:
+            logger.info("Email enviado para pedido %s (to_customer=%s)", order.id, to_customer)
         else:
-            # Email para la empresa
-            header_text = "Nuevo Pedido Recibido"
-            intro_text = ""
-            footer_text = "<p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>"
-        
-        html_content = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background-color: #0077B6; color: white; padding: 20px; text-align: center;">
-                <h1 style="margin: 0;">AQUALAN</h1>
-                <p style="margin: 5px 0 0 0;">{header_text}</p>
-            </div>
-            
-            <div style="padding: 20px;">
-                {intro_text}
-                <h2 style="color: #0077B6;">Pedido #{order.id[:8].upper()}</h2>
-                <p><strong>Fecha:</strong> {order.created_at.strftime('%d/%m/%Y %H:%M')}</p>
-                
-                <div style="background-color: #e8f4f8; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                    <h3 style="color: #023E8A; margin-top: 0;">📅 Fecha de Entrega</h3>
-                    <p style="font-size: 18px; font-weight: bold; color: #0077B6;">{delivery_message}</p>
-                </div>
-                
-                <h3 style="color: #023E8A;">👤 Datos de Entrega</h3>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr><td style="padding: 5px;"><strong>Nombre:</strong></td><td>{order.customer_name}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Email:</strong></td><td>{order.customer_email}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Teléfono:</strong></td><td>{order.customer_phone}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Ciudad:</strong></td><td>{order.delivery_city}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Dirección:</strong></td><td>{order.delivery_address}</td></tr>
-                </table>
-                
-                <h3 style="color: #023E8A;">📦 Productos Solicitados</h3>
-                <table style="width: 100%; border-collapse: collapse; background-color: #f9f9f9;">
-                    <thead>
-                        <tr style="background-color: #0077B6; color: white;">
-                            <th style="padding: 10px; text-align: left;">Producto</th>
-                            <th style="padding: 10px; text-align: center;">Cantidad</th>
-                            <th style="padding: 10px; text-align: left;">Unidad</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {items_html}
-                    </tbody>
-                </table>
-                
-                {f'<div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 8px;"><h4 style="margin-top: 0;">📝 Notas:</h4><p>{order.notes}</p></div>' if order.notes else ''}
-            </div>
-            
-            <div style="background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; color: #666;">
-                {footer_text}
-            </div>
-        </body>
-        </html>
-        """
-        
-        # Crear mensaje
-        msg = MIMEMultipart('alternative')
-        if to_customer:
-            msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
-            msg['To'] = order.customer_email
-            # Copia oculta a la empresa para cada confirmación al cliente
-            msg['Bcc'] = EMAIL_TO
-        else:
-            msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
-            msg['To'] = EMAIL_TO
-        msg['From'] = SMTP_USER if SMTP_USER else 'pedidos@aqualan.es'
-        
-        # Versión texto plano
-        text_content = f"""
-        NUEVO PEDIDO AQUALAN
-        ====================
-        
-        Pedido: #{order.id[:8].upper()}
-        Fecha: {order.created_at.strftime('%d/%m/%Y %H:%M')}
-        
-        FECHA DE ENTREGA: {delivery_message}
-        
-        DATOS DEL CLIENTE:
-        - Nombre: {order.customer_name}
-        - Email: {order.customer_email}
-        - Teléfono: {order.customer_phone}
-        - Ciudad: {order.delivery_city}
-        - Dirección: {order.delivery_address}
-        
-        PRODUCTOS:
-        """
-        for item in order.items:
-            text_content += f"- {item.quantity}x {item.product_name} ({item.unit})\n"
-        
-        if order.notes:
-            text_content += f"\nNOTAS: {order.notes}"
-        
-        msg.attach(MIMEText(text_content, 'plain'))
-        msg.attach(MIMEText(html_content, 'html'))
-        
-        # Enviar email (SMTP es bloqueante, lo ejecutamos en thread)
-        if SMTP_USER and SMTP_PASSWORD:
-            def _do_send():
-                if SMTP_PORT == 465:
-                    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-                        server.login(SMTP_USER, SMTP_PASSWORD)
-                        server.send_message(msg)
-                else:
-                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-                        server.starttls()
-                        server.login(SMTP_USER, SMTP_PASSWORD)
-                        server.send_message(msg)
-
-            await asyncio.to_thread(_do_send)
-            logger.info(f"Email enviado correctamente para pedido {order.id} (to_customer={to_customer})")
-            return True
-        else:
-            logger.warning("Credenciales SMTP no configuradas (SMTP_USER/SMTP_PASSWORD). Email no enviado.")
-            return False
-
+            logger.warning("No se pudo enviar email para pedido %s", order.id)
+        return ok
     except Exception as e:
-        logger.exception(f"Error enviando email: {e}")
+        logger.exception("Error enviando email pedido %s: %s", order.id, e)
         return False
 
 
 def _send_order_email_sync(order: Order, delivery_info: dict, to_customer: bool) -> None:
-    """Envía el email del pedido. Usa SMTP (servidor propio) primero, Resend como fallback."""
-    if not (SMTP_USER and SMTP_PASSWORD) and not RESEND_API_KEY:
-        logger.warning("Email de pedido: ni SMTP ni RESEND_API_KEY configurados.")
-        return
+    """Envía el email del pedido vía WP Mail (info@aqualan.es) o Resend como fallback."""
     try:
-        items_html = ""
-        for item in order.items:
-            items_html += f"""
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">{item.product_name}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">{item.quantity}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">{item.unit}</td>
-            </tr>
-            """
         delivery_message = delivery_info.get('message', 'Fecha por confirmar')
-        if to_customer:
-            header_text = "Confirmación de Pedido"
-            intro_text = f"<p>Hola <strong>{order.customer_name}</strong>,</p><p>Hemos recibido tu pedido correctamente. Aquí tienes los detalles:</p>"
-            footer_text = "<p>Gracias por confiar en AQUALAN. Si tienes alguna duda, contacta con nosotros en info@aqualan.es o al 946 212 789.</p>"
-            subject = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
+        subject, html = _build_order_html(order, delivery_message, to_customer)
+        dest = order.customer_email if to_customer else EMAIL_TO
+
+        # 1) WordPress WP Mail SMTP
+        ok = _send_email_wp(dest, subject, html)
+        if not ok:
+            # 2) Fallback Resend
+            ok = _send_email_resend(dest, subject, html)
+
+        if to_customer and ok:
+            # Copia a la empresa
+            _send_email_wp(EMAIL_TO, subject, html) or _send_email_resend(EMAIL_TO, subject, html)
+
+        if ok:
+            logger.info("Email de pedido enviado: %s (to_customer=%s)", order.id, to_customer)
         else:
-            header_text = "Nuevo Pedido Recibido"
-            intro_text = ""
-            footer_text = "<p>Este email fue generado automáticamente desde la App de Pedidos de AQUALAN</p>"
-            subject = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
-        html_content = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background-color: #0077B6; color: white; padding: 20px; text-align: center;">
-                <h1 style="margin: 0;">AQUALAN</h1>
-                <p style="margin: 5px 0 0 0;">{header_text}</p>
-            </div>
-            <div style="padding: 20px;">
-                {intro_text}
-                <h2 style="color: #0077B6;">Pedido #{order.id[:8].upper()}</h2>
-                <p><strong>Fecha:</strong> {order.created_at.strftime('%d/%m/%Y %H:%M')}</p>
-                <div style="background-color: #e8f4f8; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                    <h3 style="color: #023E8A; margin-top: 0;">📅 Fecha de Entrega</h3>
-                    <p style="font-size: 18px; font-weight: bold; color: #0077B6;">{delivery_message}</p>
-                </div>
-                <h3 style="color: #023E8A;">👤 Datos de Entrega</h3>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr><td style="padding: 5px;"><strong>Nombre:</strong></td><td>{order.customer_name}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Email:</strong></td><td>{order.customer_email}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Teléfono:</strong></td><td>{order.customer_phone}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Ciudad:</strong></td><td>{order.delivery_city}</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Dirección:</strong></td><td>{order.delivery_address}</td></tr>
-                </table>
-                <h3 style="color: #023E8A;">📦 Productos Solicitados</h3>
-                <table style="width: 100%; border-collapse: collapse; background-color: #f9f9f9;">
-                    <thead>
-                        <tr style="background-color: #0077B6; color: white;">
-                            <th style="padding: 10px; text-align: left;">Producto</th>
-                            <th style="padding: 10px; text-align: center;">Cantidad</th>
-                            <th style="padding: 10px; text-align: left;">Unidad</th>
-                        </tr>
-                    </thead>
-                    <tbody>{items_html}</tbody>
-                </table>
-                {f'<div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 8px;"><h4 style="margin-top: 0;">📝 Notas:</h4><p>{order.notes}</p></div>' if order.notes else ''}
-            </div>
-            <div style="background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; color: #666;">{footer_text}</div>
-        </body>
-        </html>
-        """
-
-        # 1) Intentar primero por SMTP (servidor propio)
-        smtp_ok = False
-        if SMTP_USER and SMTP_PASSWORD:
-            try:
-                msg = MIMEMultipart('alternative')
-                if to_customer:
-                    msg['Subject'] = f'✅ Confirmación de Pedido #{order.id[:8].upper()} - AQUALAN'
-                    msg['To'] = order.customer_email
-                    msg['Bcc'] = EMAIL_TO
-                else:
-                    msg['Subject'] = f'🚰 Nuevo Pedido #{order.id[:8].upper()} - {order.customer_name}'
-                    msg['To'] = EMAIL_TO
-                msg['From'] = SMTP_USER
-                text_content = f"\nPedido: #{order.id[:8].upper()}\nFecha: {order.created_at.strftime('%d/%m/%Y %H:%M')}\nFECHA DE ENTREGA: {delivery_message}\n\n"
-                for item in order.items:
-                    text_content += f"- {item.quantity}x {item.product_name} ({item.unit})\n"
-                if order.notes:
-                    text_content += f"\nNOTAS: {order.notes}"
-                msg.attach(MIMEText(text_content, 'plain'))
-                msg.attach(MIMEText(html_content, 'html'))
-                if SMTP_PORT == 465:
-                    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                        server.login(SMTP_USER, SMTP_PASSWORD)
-                        server.send_message(msg)
-                else:
-                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-                        server.starttls()
-                        server.login(SMTP_USER, SMTP_PASSWORD)
-                        server.send_message(msg)
-                smtp_ok = True
-                logger.info("Email de pedido enviado via SMTP: %s (to_customer=%s)", order.id, to_customer)
-                return
-            except Exception as e:
-                logger.exception("SMTP falló para pedido %s. Intentando Resend: %s", order.id, e)
-
-        # 2) Fallback a Resend si SMTP no está disponible o falló
-        if RESEND_API_KEY:
-            if to_customer:
-                ok_cliente = _send_email_resend(order.customer_email, subject, html_content)
-                ok_empresa = _send_email_resend(EMAIL_TO, subject, html_content)
-                if ok_cliente and ok_empresa:
-                    logger.info("Email de pedido enviado via Resend: %s (cliente y empresa)", order.id)
-                    return
-                logger.warning("Resend falló al enviar pedido (cliente_ok=%s, empresa_ok=%s).", ok_cliente, ok_empresa)
-            else:
-                ok_empresa = _send_email_resend(EMAIL_TO, subject, html_content)
-                if ok_empresa:
-                    logger.info("Email de pedido enviado via Resend a empresa: %s", order.id)
-                    return
-                logger.warning("Resend también falló al enviar pedido a empresa.")
-
-        if not smtp_ok:
-            logger.warning("Email de pedido %s: ni SMTP ni Resend funcionaron correctamente.", order.id)
+            logger.warning("Email de pedido %s: ni WP Mail ni Resend funcionaron.", order.id)
     except Exception as e:
         logger.exception("Error enviando email de pedido (background): %s", e)
 
@@ -1167,7 +1001,7 @@ async def get_delivery_date(city: str):
 @api_router.post("/offer-request")
 async def submit_offer_request(data: OfferRequestForm):
     """Recibe el formulario de solicitud de oferta y envía email a info@aqualan.es."""
-    has_email = bool((SMTP_USER and SMTP_PASSWORD) or RESEND_API_KEY)
+    has_email = True  # WP Mail endpoint siempre disponible
     if not has_email:
         logger.warning("offer-request: Ni RESEND_API_KEY ni SMTP configurados. Configura uno en el panel (Render/Railway).")
         raise HTTPException(status_code=503, detail="Servicio de email no configurado. Contacta con el administrador.")
@@ -1216,7 +1050,7 @@ async def create_order(order_data: OrderCreate):
         _orders_in_memory.append(order.dict())
     
     # Enviar emails (esperamos a que se envíen para que no se pierdan en Render)
-    has_email = bool((SMTP_USER and SMTP_PASSWORD) or RESEND_API_KEY)
+    has_email = True  # WP Mail endpoint siempre disponible
     if not has_email:
         logger.warning("create_order: Ni RESEND_API_KEY ni SMTP configurados. No se envían emails.")
     else:
@@ -1311,7 +1145,7 @@ async def startup_event():
     _load_routes_from_excel()
     await seed_products()
     logger.info("Application started and products seeded")
-    logger.info("SMTP config: server=%s port=%s user=%s password_set=%s | Resend: %s", SMTP_SERVER, SMTP_PORT, SMTP_USER or "(vacío)", "sí" if SMTP_PASSWORD else "no", "sí" if RESEND_API_KEY else "no")
+    logger.info("Email config: WP Mail endpoint=%s | Resend fallback: %s", WP_MAIL_ENDPOINT, "sí" if RESEND_API_KEY else "no")
     logger.info("POST /api/offer-request disponible para solicitudes de oferta -> info@aqualan.es")
 
 
